@@ -1,0 +1,13 @@
+/target/
+.resuma/
+data/
+*.db
+*.db-*
+local.db
+.env
+*.pdf
+/tmp/
+data/drafts/
+.fly-context/
+.cargo/config.toml
+*.bak*

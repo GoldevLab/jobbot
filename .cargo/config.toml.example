@@ -1,0 +1,3 @@
+# Copy to config.toml for a sibling ../resuma checkout:
+[patch."https://github.com/GoldevLab/resuma"]
+resuma = { path = "../resuma/crates/resuma" }

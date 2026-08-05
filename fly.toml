@@ -1,0 +1,68 @@
+# fly.toml — JobBot (Resuma dashboard + always-on discover/score/draft worker)
+# Deploy: ./scripts/fly-deploy.sh
+#
+# Fly org login (e.g. info@synergiart.com) is ONLY for hosting/billing.
+# Applicant identity is Golfredo (settings DB defaults + OPENROUTER_*), never
+# the employer account email.
+#
+# Required secret:
+#   fly secrets set -a golfredo-jobbot OPENROUTER_API_KEY="sk-or-…"
+#
+# Volume `jobbot_data` → /data holds SQLite + drafts + Resuma durable state.
+# Machine stays up (min_machines_running=1, auto_stop=off) so the worker keeps
+# searching after you close your laptop.
+
+app = 'golfredo-jobbot'
+primary_region = 'gru'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[deploy]
+  strategy = 'rolling'
+
+[env]
+  RESUMA_ENV = 'production'
+  RESUMA_ADDR = '0.0.0.0:8080'
+  RESUMA_TRUST_PROXY = '1'
+  RESUMA_TRUSTED_PROXY_CIDRS = 'fdaa::/16'
+  RESUMA_PUBLIC_DIR = '/app/public'
+  RESUMA_PAGES_ROOT = '/app/pages'
+  RESUMA_DATA_DIR = '/data'
+  DATABASE_URL = 'sqlite:/data/jobbot.db'
+  JOBBOT_AUTO_START = '1'
+  # No Chrome CDP on Fly — discover / score / draft only. Apply locally if needed.
+  JOBBOT_AUTO_APPLY = 'false'
+  JOBBOT_CV_PATH = '/app/cv/CV_Golfredo_Perez_Tether_Backend.pdf'
+  JOBBOT_KEYWORDS = 'backend,nodejs,node.js,typescript,web3,blockchain,rust,engineer,developer'
+  JOBBOT_LOCATIONS = 'norway,oslo,remote,europe'
+  JOBBOT_RATE_LIMIT_SECS = '20'
+  OPENROUTER_MODEL = 'openai/gpt-oss-20b:free'
+  OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
+  OPENROUTER_SITE_URL = 'https://github.com/GoldevLab/jobbot'
+  OPENROUTER_APP_NAME = 'JobBot'
+  RUST_LOG = 'info'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Always-on: keep discovering jobs with the PC off.
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ['app']
+
+  [[http_service.checks]]
+    grace_period = '45s'
+    interval = '20s'
+    method = 'GET'
+    timeout = '5s'
+    path = '/health'
+
+[mounts]
+  source = 'jobbot_data'
+  destination = '/data'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '1gb'
