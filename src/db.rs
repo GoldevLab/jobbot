@@ -427,6 +427,7 @@ pub async fn log_event(job_id: Option<i64>, level: &str, message: impl AsRef<str
     .await;
 }
 
+/// Returns `(touched, newly_inserted)`.
 pub async fn upsert_jobs_batch(
     jobs: &[(
         String,
@@ -438,9 +439,17 @@ pub async fn upsert_jobs_batch(
         Option<String>,
         String,
     )],
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<(usize, usize)> {
     let mut tx = pool().begin().await?;
+    let mut newly = 0usize;
     for (source, external_id, title, company, location, url, apply_url, description) in jobs {
+        let existed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM jobs WHERE source = ? AND external_id = ?",
+        )
+        .bind(source)
+        .bind(external_id)
+        .fetch_one(&mut *tx)
+        .await?;
         sqlx::query(
             r#"
             INSERT INTO jobs (source, external_id, title, company, location, url, apply_url, description)
@@ -466,9 +475,12 @@ pub async fn upsert_jobs_batch(
         .bind(description)
         .execute(&mut *tx)
         .await?;
+        if existed == 0 {
+            newly += 1;
+        }
     }
     tx.commit().await?;
-    Ok(jobs.len())
+    Ok((jobs.len(), newly))
 }
 
 #[allow(dead_code)]

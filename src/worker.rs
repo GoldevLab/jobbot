@@ -29,6 +29,9 @@ pub fn spawn(chrome: SharedChrome) -> WorkerHandle {
 async fn run_loop(stop: Arc<AtomicBool>, chrome: SharedChrome) -> Result<()> {
     db::log_event(None, "info", "worker started").await;
     let mut tick: u64 = 0;
+    let mut last_discover = std::time::Instant::now()
+        .checked_sub(Duration::from_secs(3600))
+        .unwrap_or_else(std::time::Instant::now);
     while !stop.load(Ordering::Relaxed) {
         let settings = match db::get_settings().await {
             Ok(s) => s,
@@ -65,11 +68,24 @@ async fn run_loop(stop: Arc<AtomicBool>, chrome: SharedChrome) -> Result<()> {
         .await;
 
         tick += 1;
-        // Discover rarely — scoring/drafting is the bottleneck users care about.
-        if tick == 1 || tick % 20 == 0 {
+
+        let backlog = db::jobs_by_status("discovered", 1)
+            .await
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+            || db::jobs_by_status("ready_draft", 1)
+                .await
+                .map(|v| !v.is_empty())
+                .unwrap_or(false);
+
+        // Idle queue: scrape at most every 30 min. With backlog: every ~20 ticks.
+        let due_idle = last_discover.elapsed() >= Duration::from_secs(30 * 60);
+        let due_busy = backlog && (tick == 1 || tick % 20 == 0);
+        if tick == 1 || due_busy || (!backlog && due_idle) {
             if let Err(e) = discover_once(&settings).await {
                 db::log_event(None, "warn", format!("discover: {e:#}")).await;
             }
+            last_discover = std::time::Instant::now();
         }
 
         let agent = match LlmAgent::from_env() {
@@ -80,9 +96,6 @@ async fn run_loop(stop: Arc<AtomicBool>, chrome: SharedChrome) -> Result<()> {
                 continue;
             }
         };
-
-        let backlog = db::jobs_by_status("discovered", 1).await.map(|v| !v.is_empty()).unwrap_or(false)
-            || db::jobs_by_status("ready_draft", 1).await.map(|v| !v.is_empty()).unwrap_or(false);
 
         if let Err(e) = score_batch(&agent, 8).await {
             db::log_event(None, "warn", format!("score: {e:#}")).await;
@@ -97,11 +110,11 @@ async fn run_loop(stop: Arc<AtomicBool>, chrome: SharedChrome) -> Result<()> {
             }
         }
 
-        // Faster loop while there is backlog so the queue moves in real time.
+        // Faster with backlog; idle → longer sleep so logs stay quiet.
         let wait = if backlog {
             3
         } else {
-            settings.rate_limit_secs.max(10) as u64
+            settings.rate_limit_secs.max(60) as u64
         };
         tokio::time::sleep(Duration::from_secs(wait)).await;
     }
@@ -128,9 +141,23 @@ async fn discover_once(settings: &Settings) -> Result<()> {
             )
         })
         .collect();
-    let n = db::upsert_jobs_batch(&rows).await?;
-    db::log_event(None, "info", format!("discovered/updated {n} jobs")).await;
-    if n <= 1 {
+    let (touched, newly) = db::upsert_jobs_batch(&rows).await?;
+    if newly > 0 {
+        db::log_event(
+            None,
+            "info",
+            format!("discovered {newly} new jobs ({touched} seen)"),
+        )
+        .await;
+    } else {
+        db::log_event(
+            None,
+            "info",
+            format!("discover refresh: 0 new ({touched} already in queue)"),
+        )
+        .await;
+    }
+    if touched <= 1 {
         db::log_event(
             None,
             "warn",
