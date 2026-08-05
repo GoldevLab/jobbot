@@ -1,23 +1,19 @@
-# Used when build context is the staging `.fly-context/` directory
-# (jobbot/ + resuma/ siblings + Dockerfile + docker-entrypoint.sh).
-**/target/
-**/.git/
-**/.resuma/
-**/.cursor/
-**/.env
-**/.env.*
-**/node_modules/
-**/data/
+/target/
+/.resuma/
+/.fly-context/
+/.git/
+/.github/
+/.cursor/
+/.env
+/.env.*
+/data/
+/tmp/
 **/*.swp
 **/.DS_Store
-
-resuma/examples/
-resuma/docs/
-resuma/website/
-resuma/.github/
-resuma/target/
-jobbot/target/
-jobbot/.resuma/
-jobbot/.fly-context/
-jobbot/data/
-jobbot/tmp/
+# Local path patch must not leak into Fly/CI builds (use git dep instead).
+/.cargo/config.toml
+*.bak*
+*.db
+*.db-*
+*.pdf
+!cv/.gitkeep

@@ -97,7 +97,26 @@ chmod +x scripts/fly-deploy.sh
 - `JOBBOT_AUTO_APPLY=false` on Fly (no Chrome CDP); apply locally if needed
 - Dashboard: `https://golfredo-jobbot.fly.dev/`
 
+## Deploy (Fly.io + GitHub Actions)
+
+App: `golfredo-jobbot` → https://golfredo-jobbot.fly.dev/
+
+Push to `main` runs [`.github/workflows/fly.yml`](.github/workflows/fly.yml) (`flyctl deploy --remote-only`).
+
+One-time setup (already done for GoldevLab/jobbot):
+
+```bash
+fly tokens create deploy -x 999999h -a golfredo-jobbot
+# GitHub → Settings → Secrets → Actions → FLY_API_TOKEN (full value, including "FlyV1 …")
+fly secrets set -a golfredo-jobbot OPENROUTER_API_KEY=…
+```
+
+Manual deploy from this machine: `./scripts/fly-deploy.sh`
+
+On Fly, auto-apply is off (no Chrome CDP). Discover / score / draft run 24/7.
+
 ## Security
 
 - `.env` is gitignored. Rotate the OpenRouter key if it was pasted in chat.
+- `FLY_API_TOKEN` lives only in GitHub Actions secrets / local fly auth.
 - Never put employer/boss contact data in JobBot settings.

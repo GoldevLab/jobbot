@@ -1,40 +1,18 @@
-# Staging context layout (created by scripts/fly-deploy.sh):
-#   .fly-context/
-#     Dockerfile  fly.toml  docker-entrypoint.sh
-#     jobbot/ …
-#     resuma/ …
-
+# JobBot — build from this repository (Resuma pulled via git dependency).
 # sqlx 0.9 / adk-rust need rustc ≥ 1.94
 FROM rust:1.94-bookworm AS builder
-WORKDIR /workspace
+WORKDIR /app
 
-COPY resuma/Cargo.toml resuma/README.md ./resuma/
-COPY resuma/crates/resuma-macros ./resuma/crates/resuma-macros
-COPY resuma/crates/resuma ./resuma/crates/resuma
-COPY resuma/client-sdk ./resuma/client-sdk
-RUN python3 - <<'PY'
-from pathlib import Path
-import re
-p = Path("resuma/Cargo.toml")
-t = p.read_text()
-t2, n = re.subn(
-    r"members\s*=\s*\[[^\]]*\]",
-    'members = [\n    "crates/resuma-macros",\n    "crates/resuma",\n]',
-    t,
-    count=1,
-    flags=re.S,
-)
-if n != 1:
-    raise SystemExit(f"failed to patch resuma workspace members (n={n})")
-p.write_text(t2)
-PY
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY jobbot/Cargo.toml jobbot/Cargo.lock ./jobbot/
-COPY jobbot/migrations ./jobbot/migrations
-COPY jobbot/src ./jobbot/src
-COPY jobbot/public ./jobbot/public
+# Do not copy .cargo/config.toml — CI/Fly must use the git dep, not a local path patch.
+COPY Cargo.toml Cargo.lock ./
+COPY migrations ./migrations
+COPY src ./src
+COPY public ./public
 
-WORKDIR /workspace/jobbot
 RUN cargo build --release --bin jobbot
 
 FROM debian:bookworm-slim
@@ -46,12 +24,12 @@ RUN apt-get update \
     && chown -R jobbot:jobbot /data
 
 WORKDIR /app
-COPY --from=builder /workspace/jobbot/target/release/jobbot /app/jobbot
-COPY --from=builder /workspace/jobbot/public /app/public
-COPY --from=builder /workspace/jobbot/src/pages /app/pages
-COPY --from=builder /workspace/jobbot/migrations /app/migrations
+COPY --from=builder /app/target/release/jobbot /app/jobbot
+COPY --from=builder /app/public /app/public
+COPY --from=builder /app/src/pages /app/pages
+COPY --from=builder /app/migrations /app/migrations
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-# Optional CV for drafts (applicant = Golfredo, never employer identity)
+# Optional CV (empty dir is fine in CI; local deploy can place a PDF in cv/)
 COPY cv/ /app/cv/
 RUN chmod +x /app/docker-entrypoint.sh \
     && chown -R jobbot:jobbot /app
