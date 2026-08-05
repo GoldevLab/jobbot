@@ -167,6 +167,7 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                         <button class="btn" type="submit">"Discover now"</button>
                     </Form>
                     <a class="btn btn-ghost" href="/">"Refresh"</a>
+                    <a class="btn" href="/profile">"Profile coach"</a>
                     <a class="btn btn-ghost" href="/settings">"Settings"</a>
                     <a class="btn btn-ghost" href="/logs">"Logs"</a>
                 </div>

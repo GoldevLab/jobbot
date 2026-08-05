@@ -72,14 +72,16 @@ Lever / unknown hosts keep the draft as **manual**. Submit confirmation requires
 
 ## Profile coach (parallel)
 
-Separate tokio worker + UI at `/profile`. Improves **GitHub** (public API snapshot), **LinkedIn** (from Settings notes — no scrape), and **general** cross-profile consistency.
+UI at `/profile`. Shares memory with the apply queue (drafts ↔ kept bios).
 
-- Own flag: `profile_worker_running` (Run/Stop on Profile page)
-- Own tables: `profile_suggestions`, `profile_events` (apply `events` / `jobs` untouched)
-- No Chrome — never fights the apply CDP session
-- Paste LinkedIn About into **Settings → Profile notes**, then **Analyze now**
+- **GitHub auto:** with `GITHUB_TOKEN` / `JOBBOT_GITHUB_TOKEN`, bio + repo topics PATCH/PUT via API (no confirmation)
+- **LinkedIn:** no write API — About/headline auto-save into **Profile notes** for one paste
+- Keep/Dismiss trains the coach; high-score drafts feed the same memory
+- Fly: `JOBBOT_PROFILE_AUTO_START=1` (already in `fly.toml`)
 
-Optional: `JOBBOT_PROFILE_AUTO_START=1`
+```bash
+fly secrets set -a golfredo-jobbot GITHUB_TOKEN=ghp_…   # classic PAT: user + public_repo
+```
 
 ## Fly.io (always-on search)
 
@@ -109,11 +111,12 @@ One-time setup (already done for GoldevLab/jobbot):
 fly tokens create deploy -x 999999h -a golfredo-jobbot
 # GitHub → Settings → Secrets → Actions → FLY_API_TOKEN (full value, including "FlyV1 …")
 fly secrets set -a golfredo-jobbot OPENROUTER_API_KEY=…
+fly secrets set -a golfredo-jobbot GITHUB_TOKEN=ghp_…   # classic PAT: user profile + public_repo
 ```
 
 Manual deploy from this machine: `./scripts/fly-deploy.sh`
 
-On Fly, auto-apply is off (no Chrome CDP). Discover / score / draft run 24/7.
+On Fly, job **and** profile coach auto-start (`JOBBOT_AUTO_START` + `JOBBOT_PROFILE_AUTO_START`). Job ATS apply is off (no Chrome). Discover / score / draft + GitHub bio/topics run 24/7. LinkedIn edits stay in Profile notes (paste once).
 
 ## Security
 

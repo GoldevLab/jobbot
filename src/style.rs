@@ -47,6 +47,7 @@ pub fn draft_prompt(
     location: &str,
     description: &str,
     settings: &crate::db::Settings,
+    profile_memory: &str,
 ) -> String {
     format!(
         r#"{system}
@@ -62,6 +63,9 @@ LinkedIn: {linkedin}
 GitHub: {github}
 Working from: {country}
 Expected salary USD: {salary}
+
+Shared memory from the profile coach (kept bios/headlines — match this voice when it fits):
+{memory}
 
 Job: {title} @ {company} ({location})
 Description:
@@ -92,6 +96,14 @@ Finish the full JSON. Do not truncate.
         github = settings.github,
         country = settings.country,
         salary = settings.expected_salary_usd,
+        memory = truncate(
+            if profile_memory.trim().is_empty() {
+                "(none yet)"
+            } else {
+                profile_memory
+            },
+            1800
+        ),
         title = title,
         company = company,
         location = location,
@@ -112,12 +124,16 @@ pub fn profile_coach_prompt(
     platform: &str,
     settings: &crate::db::Settings,
     snapshot: &str,
+    learning: &str,
 ) -> String {
     format!(
         r#"{system}
 
 You are improving public professional profiles for job search (backend / Web3 / Norway-EU remote).
 Platform to focus on: {platform}
+
+JobBot WILL auto-apply GitHub `actions` (bio + repo topics) via API without asking the user.
+LinkedIn cannot be auto-edited — only ready-to-paste suggestions.
 
 Current settings:
 Name: {name}
@@ -132,6 +148,9 @@ Notes / pasted profile text (may be empty — LinkedIn About, headline, pinned r
 Live snapshot / public data for this platform (may be partial):
 {snapshot}
 
+Memory from prior coaching + the apply-queue agent (learn from this; prefer kept styles, avoid dismissed):
+{learning}
+
 Reply with ONLY JSON (no markdown):
 {{
   "summary": "<2 short sentences on what to fix first>",
@@ -141,16 +160,30 @@ Reply with ONLY JSON (no markdown):
       "body": "<ready-to-paste text OR concrete checklist steps>",
       "priority": <1 urgent, 2 normal, 3 nice-to-have>
     }}
+  ],
+  "actions": [
+    {{
+      "type": "set_bio",
+      "value": "<GitHub bio ≤160 chars, no email>"
+    }},
+    {{
+      "type": "set_topics",
+      "repo": "<exact repo name you own>",
+      "topics": ["nodejs", "typescript", "web3"]
+    }}
   ]
 }}
 
 Rules:
 - 3 to 6 suggestions max. Ready-to-paste copy when possible (bio, About, README blurb).
 - Sound human, not corporate. No emojis. No fake star counts or invented companies.
-- For github: bio, README pin order, topics, pin strategy, contribution visibility.
-- For linkedin: headline, About, featured, Open to Work framing for Norway/EU backend.
-- For general: CV alignment, personal site, consistency across profiles.
+- For github: ONLY GitHub-related suggestion titles (bio, pin order, topics, README). ALWAYS include actions when bio/topics should change. Prefer short bio without email.
+- For github topics: only repos that appear in the snapshot. Max 8 topics per repo.
+- For linkedin: ONLY LinkedIn titles (headline, About, featured). No GitHub bio under linkedin. No actions (LinkedIn cannot auto-apply via API).
+- For general: CV alignment, consistency across profiles; actions empty unless github-related.
 - Prefer concrete Norwegian/EU remote + Web3/backend positioning when relevant.
+- Evolve copy using Memory: if a style was kept, reuse it; if dismissed, do not repeat.
+- Mirror winning apply-agent pitches from Memory when writing About/headline/bio.
 "#,
         system = SYSTEM_HUMAN,
         platform = platform,
@@ -162,5 +195,10 @@ Rules:
         locations = settings.locations,
         notes = truncate(&settings.profile_notes, 2500),
         snapshot = truncate(snapshot, 4500),
+        learning = truncate(if learning.trim().is_empty() {
+            "(no lessons yet)"
+        } else {
+            learning
+        }, 3500),
     )
 }

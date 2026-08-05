@@ -89,7 +89,7 @@ fn render_profile(
             <div class="card">
                 <h1>"Profile coach"</h1>
                 <p class="muted">
-                    "Parallel agent for GitHub, LinkedIn, and cross-profile polish. Does not touch the apply queue or Chrome session. Paste LinkedIn About into Settings → Profile notes for better LinkedIn drafts."
+                    "Connected to the apply queue: drafts teach the coach, kept bios/headlines shape new pitches. Offline: both workers auto-start on Fly. GitHub bio/topics push automatically when GITHUB_TOKEN is set (no confirmation). LinkedIn has no public write API — About/headline auto-save into Profile notes for one paste. Keep also pushes GitHub when possible."
                 </p>
                 <div class="row">
                     <span class="status-pill">
@@ -129,7 +129,7 @@ fn render_profile(
 
             <div>
                 <h2 style="margin:1rem 0 0.25rem">"Suggestions"</h2>
-                <p class="muted">"Copy what you like into GitHub/LinkedIn. Keep marks useful drafts; Dismiss hides noise."</p>
+                <p class="muted">"GitHub changes may already be live (status: applied). LinkedIn: paste manually. Keep = prefer this style next time; Dismiss = avoid."</p>
                 {if cards.is_empty() {
                     view! { <div class="card muted">"No suggestions yet."</div> }
                 } else {

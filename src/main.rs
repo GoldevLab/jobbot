@@ -3,6 +3,7 @@
 mod agent;
 mod browser;
 mod db;
+mod github;
 mod pages;
 mod profile_worker;
 mod sources;
@@ -159,6 +160,88 @@ async fn keep_profile_suggestion(
 ) -> std::result::Result<Redirect, SubmitError> {
     let id: i64 = form.id.trim().parse().unwrap_or(0);
     if id > 0 {
+        if let Ok(Some(sug)) = db::get_profile_suggestion(id).await {
+            let _ = db::insert_profile_lesson(
+                "keep",
+                &sug.platform,
+                &sug.title,
+                &sug.body,
+                1.5,
+            )
+            .await;
+            // Prefer auto-push when possible.
+            let title_l = sug.title.to_ascii_lowercase();
+            if sug.platform == "github"
+                && (title_l.contains("bio") || title_l.contains("topic"))
+                && github::token_from_env().is_some()
+            {
+                let mut owner = sug
+                    .source_json
+                    .as_deref()
+                    .and_then(|s| {
+                        s.lines()
+                            .find(|l| l.starts_with("login:"))
+                            .map(|l| l.trim_start_matches("login:").trim().to_string())
+                    })
+                    .unwrap_or_default();
+                if owner.is_empty() {
+                    if let Ok(s) = db::get_settings().await {
+                        owner = s
+                            .github
+                            .trim()
+                            .trim_end_matches('/')
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or("GoldevLab")
+                            .to_string();
+                    } else {
+                        owner = "GoldevLab".into();
+                    }
+                }
+                if let Some(msg) =
+                    github::apply_from_suggestion(&owner, &sug.title, &sug.body).await
+                {
+                    db::log_profile_event("info", format!("keep→auto: {msg}")).await;
+                    let _ = db::set_profile_suggestion_status(id, "applied").await;
+                    return Ok(Redirect::to("/profile"));
+                }
+            }
+            if sug.platform == "linkedin"
+                && (title_l.contains("about") || title_l.contains("headline"))
+            {
+                if let Ok(settings) = db::get_settings().await {
+                    let mut notes = settings.profile_notes;
+                    let label = if title_l.contains("headline") {
+                        "Headline"
+                    } else {
+                        "About"
+                    };
+                    let block = format!("{label}:\n{}", sug.body.trim());
+                    if !notes.contains(sug.body.trim()) {
+                        if !notes.is_empty() {
+                            notes.push_str("\n\n");
+                        }
+                        notes.push_str(&block);
+                        let _ = sqlx::query(
+                            "UPDATE settings SET profile_notes = ?, updated_at = datetime('now') WHERE id = 1",
+                        )
+                        .bind(&notes)
+                        .execute(db::pool())
+                        .await;
+                        db::log_profile_event(
+                            "info",
+                            format!("keep→notes: saved LinkedIn {label} into Profile notes"),
+                        )
+                        .await;
+                    }
+                }
+            }
+            db::log_profile_event(
+                "info",
+                format!("learned keep: {} · {}", sug.platform, sug.title),
+            )
+            .await;
+        }
         let _ = db::set_profile_suggestion_status(id, "kept").await;
     }
     Ok(Redirect::to("/profile"))
@@ -171,6 +254,21 @@ async fn dismiss_profile_suggestion(
 ) -> std::result::Result<Redirect, SubmitError> {
     let id: i64 = form.id.trim().parse().unwrap_or(0);
     if id > 0 {
+        if let Ok(Some(sug)) = db::get_profile_suggestion(id).await {
+            let _ = db::insert_profile_lesson(
+                "dismiss",
+                &sug.platform,
+                &sug.title,
+                &sug.body,
+                -1.0,
+            )
+            .await;
+            db::log_profile_event(
+                "info",
+                format!("learned dismiss: {} · {}", sug.platform, sug.title),
+            )
+            .await;
+        }
         let _ = db::set_profile_suggestion_status(id, "dismissed").await;
     }
     Ok(Redirect::to("/profile"))

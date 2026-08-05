@@ -278,6 +278,130 @@ pub async fn set_profile_suggestion_status(id: i64, status: &str) -> anyhow::Res
     Ok(())
 }
 
+pub async fn get_profile_suggestion(id: i64) -> anyhow::Result<Option<ProfileSuggestion>> {
+    let row = sqlx::query_as::<_, ProfileSuggestion>(
+        "SELECT * FROM profile_suggestions WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool())
+    .await?;
+    Ok(row)
+}
+
+pub async fn insert_profile_lesson(
+    source: &str,
+    platform: &str,
+    title: &str,
+    body: &str,
+    weight: f64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO profile_lessons (source, platform, title, body, weight)
+        VALUES (?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(source)
+    .bind(platform)
+    .bind(title)
+    .bind(body)
+    .bind(weight)
+    .execute(pool())
+    .await?;
+    Ok(())
+}
+
+/// Kept profile copy for the apply-agent drafts (coach → jobs).
+pub async fn draft_learning_context(limit: i64) -> String {
+    let Ok(rows) = sqlx::query_as::<_, (String, String, String)>(
+        r#"
+        SELECT platform, title, body FROM profile_lessons
+        WHERE source IN ('keep', 'applied')
+        ORDER BY id DESC LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool())
+    .await
+    else {
+        return String::new();
+    };
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("Kept profile lines:\n");
+    for (platform, title, body) in rows {
+        out.push_str(&format!(
+            "- [{platform}] {title}: {}\n",
+            crate::style::truncate(&body, 200)
+        ));
+    }
+    out
+}
+
+/// Compact memory for the coach prompt: keeps, dismissals, apply-agent pitches.
+pub async fn profile_learning_context(limit: i64) -> String {
+    let mut out = String::new();
+
+    if let Ok(rows) = sqlx::query_as::<_, (String, String, String)>(
+        r#"
+        SELECT source, title, body FROM profile_lessons
+        ORDER BY id DESC LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool())
+    .await
+    {
+        if !rows.is_empty() {
+            out.push_str("Lessons (keep = prefer this style; dismiss = avoid; apply_agent = what sells in drafts):\n");
+            for (source, title, body) in rows {
+                let body = crate::style::truncate(&body, 220);
+                out.push_str(&format!("- [{source}] {title}: {body}\n"));
+            }
+            out.push('\n');
+        }
+    }
+
+    if let Ok(jobs) = sqlx::query_as::<_, (String, String, Option<f64>, Option<String>)>(
+        r#"
+        SELECT title, company, score, draft_json FROM jobs
+        WHERE status IN ('ready', 'manual', 'applied')
+          AND draft_json IS NOT NULL
+        ORDER BY COALESCE(score, 0) DESC, id DESC
+        LIMIT 8
+        "#,
+    )
+    .fetch_all(pool())
+    .await
+    {
+        if !jobs.is_empty() {
+            out.push_str("Apply-agent winning pitches (mirror this voice on GitHub/LinkedIn):\n");
+            for (title, company, score, draft) in jobs {
+                let pitch = draft
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                    .and_then(|v| {
+                        v.get("pitch")
+                            .and_then(|x| x.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .unwrap_or_default();
+                if pitch.is_empty() {
+                    continue;
+                }
+                let sc = score.map(|s| format!("{s:.0}")).unwrap_or_else(|| "?".into());
+                out.push_str(&format!(
+                    "- [{sc}] {title} @ {company}: {}\n",
+                    crate::style::truncate(&pitch, 180)
+                ));
+            }
+        }
+    }
+
+    out
+}
+
 pub async fn list_profile_events(limit: i64) -> anyhow::Result<Vec<ProfileEventRow>> {
     let rows = sqlx::query_as::<_, ProfileEventRow>(
         "SELECT * FROM profile_events ORDER BY id DESC LIMIT ?",

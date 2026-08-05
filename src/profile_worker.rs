@@ -118,10 +118,115 @@ async fn coach_platform(platform: &str, settings: &Settings) -> Result<usize> {
         ),
     };
 
+    let learning = db::profile_learning_context(24).await;
     let agent = LlmAgent::from_env()?;
-    let prompt = style::profile_coach_prompt(platform, settings, &snapshot);
+    let prompt = style::profile_coach_prompt(platform, settings, &snapshot, &learning);
     let json = agent.complete_json(&prompt).await?;
-    persist_suggestions(platform, &json, Some(&snapshot)).await
+    let n = persist_suggestions(platform, &json, Some(&snapshot)).await?;
+
+    // Auto-apply GitHub (bio + topics) with no confirmation when token is set.
+    if platform == "github" {
+        auto_apply_github(settings, &json).await;
+    }
+
+    Ok(n)
+}
+
+async fn auto_apply_github(settings: &Settings, json: &Value) {
+    if crate::github::token_from_env().is_none() {
+        db::log_profile_event(
+            "warn",
+            "GITHUB_TOKEN not set — coach will not push bio/topics to GitHub",
+        )
+        .await;
+        return;
+    }
+
+    let owner = github_login(&settings.github).unwrap_or_default();
+    let mut applied_any = false;
+
+    let actions = json
+        .get("actions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if !actions.is_empty() {
+        let logs = crate::github::apply_actions(&owner, &actions).await;
+        for line in logs {
+            let ok = line.starts_with("applied");
+            if ok {
+                applied_any = true;
+            }
+            db::log_profile_event(if ok { "info" } else { "warn" }, &line).await;
+        }
+    } else if let Some(suggestions) = json.get("suggestions").and_then(|v| v.as_array()) {
+        // Fallback only when LLM omitted structured actions (avoids double PATCHes).
+        for item in suggestions.iter().take(6) {
+            let title = item
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let body = item
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if title.is_empty() || body.is_empty() {
+                continue;
+            }
+            if let Some(msg) = crate::github::apply_from_suggestion(&owner, title, body).await {
+                let ok = msg.contains("auto-applied");
+                if ok {
+                    applied_any = true;
+                }
+                db::log_profile_event(if ok { "info" } else { "warn" }, &msg).await;
+            }
+        }
+    }
+
+    if applied_any {
+        let _ = db::insert_profile_lesson(
+            "applied",
+            "github",
+            "auto-apply",
+            "GitHub bio/topics were pushed via API this cycle",
+            0.5,
+        )
+        .await;
+        // Mark newest github suggestions as applied so UI shows they landed.
+        if let Ok(rows) = db::list_profile_suggestions(12).await {
+            for sug in rows
+                .into_iter()
+                .filter(|s| s.platform == "github" && s.status == "new")
+                .take(4)
+            {
+                let t = sug.title.to_ascii_lowercase();
+                if t.contains("bio") || t.contains("topic") || t.contains("overview") {
+                    let _ = db::set_profile_suggestion_status(sug.id, "applied").await;
+                }
+            }
+        }
+    }
+}
+
+fn normalize_platform(requested: &str, title: &str) -> String {
+    let t = title.to_ascii_lowercase();
+    if t.contains("linkedin") {
+        return "linkedin".into();
+    }
+    if t.contains("github") || t.contains("readme") || t.contains("pinned") || t.contains("topic")
+    {
+        return "github".into();
+    }
+    if t.contains("bio") && requested == "github" {
+        return "github".into();
+    }
+    if (t.contains("headline") || t.contains("about")) && requested != "github" {
+        return "linkedin".into();
+    }
+    requested.to_string()
 }
 
 async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str>) -> Result<usize> {
@@ -166,10 +271,84 @@ async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str
             .and_then(|v| v.as_i64())
             .unwrap_or(2)
             .clamp(1, 3);
-        db::insert_profile_suggestion(platform, title, body, priority, None).await?;
+        let plat = normalize_platform(platform, title);
+        db::insert_profile_suggestion(&plat, title, body, priority, None).await?;
         n += 1;
     }
+
+    // LinkedIn: auto-save About/headline into profile_notes so next cycles + drafts use them.
+    if platform == "linkedin" {
+        sync_linkedin_notes_from_json(json).await;
+    }
+
     Ok(n)
+}
+
+async fn sync_linkedin_notes_from_json(json: &Value) {
+    let Some(arr) = json.get("suggestions").and_then(|v| v.as_array()) else {
+        return;
+    };
+    let mut headline = None;
+    let mut about = None;
+    for item in arr {
+        let title = item
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let body = item
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if body.is_empty() {
+            continue;
+        }
+        if title.contains("headline") {
+            headline = Some(body.to_string());
+        } else if title.contains("about") {
+            about = Some(body.to_string());
+        }
+    }
+    if headline.is_none() && about.is_none() {
+        return;
+    }
+    let Ok(settings) = db::get_settings().await else {
+        return;
+    };
+    let before = settings.profile_notes.clone();
+    let mut notes = settings.profile_notes;
+    if let Some(h) = headline {
+        if !notes.to_ascii_lowercase().contains("headline:") {
+            if !notes.is_empty() {
+                notes.push_str("\n\n");
+            }
+            notes.push_str("Headline:\n");
+            notes.push_str(&h);
+        }
+    }
+    if let Some(a) = about {
+        if !notes.to_ascii_lowercase().contains("about:") {
+            if !notes.is_empty() {
+                notes.push_str("\n\n");
+            }
+            notes.push_str("About:\n");
+            notes.push_str(&a);
+        }
+    }
+    if notes != before {
+        let _ = sqlx::query(
+            "UPDATE settings SET profile_notes = ?, updated_at = datetime('now') WHERE id = 1",
+        )
+        .bind(&notes)
+        .execute(db::pool())
+        .await;
+        db::log_profile_event(
+            "info",
+            "auto-saved LinkedIn headline/About into Settings → Profile notes (paste on LinkedIn)",
+        )
+        .await;
+    }
 }
 
 fn github_login(url_or_login: &str) -> Option<String> {

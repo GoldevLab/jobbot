@@ -5,8 +5,9 @@
 # Applicant identity is Golfredo (settings DB defaults + OPENROUTER_*), never
 # the employer account email.
 #
-# Required secret:
+# Required secrets:
 #   fly secrets set -a golfredo-jobbot OPENROUTER_API_KEY="sk-or-…"
+#   fly secrets set -a golfredo-jobbot GITHUB_TOKEN="ghp_…"   # bio + repo topics auto-apply
 #
 # Volume `jobbot_data` → /data holds SQLite + drafts + Resuma durable state.
 # Machine stays up (min_machines_running=1, auto_stop=off) so the worker keeps
@@ -31,6 +32,8 @@ primary_region = 'gru'
   RESUMA_DATA_DIR = '/data'
   DATABASE_URL = 'sqlite:/data/jobbot.db'
   JOBBOT_AUTO_START = '1'
+  # Profile coach also runs offline (GitHub auto-apply needs GITHUB_TOKEN secret).
+  JOBBOT_PROFILE_AUTO_START = '1'
   # No Chrome CDP on Fly — discover / score / draft only. Apply locally if needed.
   JOBBOT_AUTO_APPLY = 'false'
   JOBBOT_CV_PATH = '/app/cv/CV_Golfredo_Perez_Tether_Backend.pdf'

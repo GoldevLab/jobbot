@@ -263,12 +263,14 @@ async fn draft_batch(agent: &LlmAgent, settings: &Settings, limit: i64) -> Resul
             format!("tailoring CV/answers for {} @ {}", job.title, job.company),
         )
         .await;
+        let memory = db::draft_learning_context(10).await;
         let prompt = style::draft_prompt(
             &job.title,
             &job.company,
             &job.location,
             &job.description,
             settings,
+            &memory,
         );
         match agent.complete_json(&prompt).await {
             Ok(v) => {
@@ -281,6 +283,30 @@ async fn draft_batch(agent: &LlmAgent, settings: &Settings, limit: i64) -> Resul
                     .and_then(|x| x.as_str())
                     .unwrap_or("draft ready");
                 db::log_event(Some(job.id), "info", format!("draft ready — {pitch}")).await;
+                // Feed apply-agent wins into the profile coach memory.
+                let emphasize = v
+                    .get("emphasize")
+                    .and_then(|a| a.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                let lesson = if emphasize.is_empty() {
+                    pitch.to_string()
+                } else {
+                    format!("{pitch} | emphasize: {emphasize}")
+                };
+                let _ = db::insert_profile_lesson(
+                    "apply_agent",
+                    "jobs",
+                    &format!("{} @ {}", job.title, job.company),
+                    &lesson,
+                    job.score.unwrap_or(70.0) / 100.0,
+                )
+                .await;
             }
             Err(e) => {
                 let fallback = serde_json::json!({
