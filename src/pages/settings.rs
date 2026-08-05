@@ -78,8 +78,8 @@ fn render_settings(s: Settings) -> View {
                 <input type="text" name="cv_path" value={s.cv_path} />
                 <label>"Keywords (comma)"</label>
                 <input type="text" name="keywords" value={s.keywords} />
-                <label>"Locations (comma)"</label>
-                <input type="text" name="locations" value={s.locations} />
+                <label>"Locations (comma) — leave empty for all countries"</label>
+                <input type="text" name="locations" value={s.locations} placeholder="e.g. remote,norway — or blank = worldwide" />
                 <label>"Profile notes (paste LinkedIn About / headline for the coach)"</label>
                 <textarea name="profile_notes" rows="6">{s.profile_notes}</textarea>
                 <div class="row" style="margin-top:0.9rem">

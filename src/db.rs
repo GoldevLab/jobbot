@@ -56,12 +56,21 @@ pub async fn init_db() -> anyhow::Result<()> {
         }
     }
     if let Ok(loc) = std::env::var("JOBBOT_LOCATIONS") {
-        if !loc.trim().is_empty() {
-            let _ = sqlx::query("UPDATE settings SET locations = ? WHERE id = 1")
-                .bind(loc.trim())
-                .execute(&pool)
-                .await;
-        }
+        let loc = loc.trim();
+        // Empty / * / all → worldwide (no location filter).
+        let value = if loc.is_empty()
+            || loc == "*"
+            || loc.eq_ignore_ascii_case("all")
+            || loc.eq_ignore_ascii_case("worldwide")
+        {
+            ""
+        } else {
+            loc
+        };
+        let _ = sqlx::query("UPDATE settings SET locations = ? WHERE id = 1")
+            .bind(value)
+            .execute(&pool)
+            .await;
     }
     if let Ok(rate) = std::env::var("JOBBOT_RATE_LIMIT_SECS") {
         if let Ok(n) = rate.trim().parse::<i64>() {
@@ -143,7 +152,7 @@ impl Settings {
             expected_salary_usd: "70000".into(),
             cv_path: String::new(),
             keywords: "backend,nodejs,typescript,web3".into(),
-            locations: "norway,oslo,remote,europe".into(),
+            locations: String::new(),
             auto_apply: 1,
             worker_running: 0,
             rate_limit_secs: 45,
