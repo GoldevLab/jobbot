@@ -192,9 +192,9 @@ Rules:
 - Positioning: remote worldwide from Venezuela. Do NOT default to "Norway/EU only" or "Oslo" unless the user notes demand it. Prefer "remote worldwide" / "open to any timezone overlap".
 - Experience: Node/TS backends since ~2017 (~8 years), Gravitad since 2022. Never invent "3+ years".
 - For github: ONLY GitHub-related suggestion titles (bio, pin order, topics, README). ALWAYS include actions when bio/topics should change. Prefer short bio without email.
-- For github topics: ONLY repos that appear in the snapshot (exact names). Never invent repo names like dex-backend. Max 8 topics per repo.
-- For linkedin: ONLY LinkedIn titles (headline, About, featured). No GitHub bio under linkedin. No actions.
-- For general: CV alignment, consistency; actions empty unless github-related and repo is in snapshot.
+- For github topics: ONLY repos that appear in the snapshot (exact names like resuma, jobbot). NEVER invent repos (block-explorer-indexer, dex-backend, etc.). Max 8 topics per repo; prefer 1–2 real repos.
+- For linkedin: ONLY LinkedIn titles (headline, About, featured). No GitHub bio under linkedin. No actions. At most one headline + one About.
+- For general: short consistency checklist only; do NOT repeat the same overview every cycle; actions empty unless repo is in snapshot.
 - Evolve copy using Memory: if a style was kept, reuse it; if dismissed, do not repeat.
 - Mirror winning apply-agent pitches from Memory when writing About/headline/bio.
 "#,

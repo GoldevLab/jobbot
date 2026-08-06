@@ -290,6 +290,38 @@ pub async fn profile_open_kind_count(platform: &str, kind: &str) -> i64 {
     row.map(|r| r.0).unwrap_or(0)
 }
 
+/// Keep at most one open (`new`) suggestion per kind (bio/headline/about/overview) per platform.
+/// Older duplicates are dismissed so the queue stays usable.
+pub async fn prune_open_profile_suggestions(platform: &str) -> anyhow::Result<u64> {
+    let kinds = ["bio", "headline", "about", "overview"];
+    let mut n = 0u64;
+    for kind in kinds {
+        let like = format!("%{kind}%");
+        let ids: Vec<(i64,)> = sqlx::query_as(
+            r#"
+            SELECT id FROM profile_suggestions
+            WHERE platform = ? AND status = 'new' AND lower(title) LIKE lower(?)
+            ORDER BY id DESC
+            "#,
+        )
+        .bind(platform)
+        .bind(&like)
+        .fetch_all(pool())
+        .await?;
+        // Keep newest; dismiss the rest.
+        for (id,) in ids.into_iter().skip(1) {
+            let res = sqlx::query(
+                "UPDATE profile_suggestions SET status = 'dismissed', updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(id)
+            .execute(pool())
+            .await?;
+            n += res.rows_affected();
+        }
+    }
+    Ok(n)
+}
+
 pub async fn list_profile_suggestions(limit: i64) -> anyhow::Result<Vec<ProfileSuggestion>> {
     let rows = sqlx::query_as::<_, ProfileSuggestion>(
         r#"

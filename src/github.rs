@@ -204,11 +204,49 @@ pub fn repos_from_snapshot(snapshot: &str) -> Vec<String> {
 }
 
 fn repo_allowed(repo: &str, allowed: &[String]) -> bool {
+    // Empty allowlist = refuse (never invent repo names when snapshot parse/API fails).
     if allowed.is_empty() {
-        return true;
+        return false;
     }
     let r = repo.to_ascii_lowercase();
     allowed.iter().any(|a| a.eq_ignore_ascii_case(&r))
+}
+
+/// Live repo names for an owner (non-fork), for topics allowlisting.
+pub async fn list_owner_repos(owner: &str) -> Result<Vec<String>> {
+    let owner = owner.trim().trim_start_matches('@');
+    if owner.is_empty() {
+        return Ok(vec![]);
+    }
+    let token = token_from_env();
+    let mut req = reqwest::Client::builder()
+        .user_agent(UA)
+        .timeout(Duration::from_secs(20))
+        .build()?
+        .get(format!(
+            "https://api.github.com/users/{owner}/repos?sort=updated&per_page=30&type=owner"
+        ))
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json");
+    if let Some(t) = token.as_deref() {
+        req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {t}"));
+    }
+    let resp = req.send().await.context("list repos")?;
+    if !resp.status().is_success() {
+        return Ok(vec![]);
+    }
+    let repos: Value = resp.json().await.unwrap_or(json!([]));
+    let mut out = Vec::new();
+    if let Some(arr) = repos.as_array() {
+        for r in arr {
+            if r.get("fork").and_then(|v| v.as_bool()).unwrap_or(false) {
+                continue;
+            }
+            if let Some(name) = r.get("name").and_then(|v| v.as_str()) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Apply structured actions from the coach LLM JSON.
@@ -272,9 +310,15 @@ pub async fn apply_actions(
                     log.push("topics apply skipped: missing owner/repo".into());
                     continue;
                 }
+                if allowed_repos.is_empty() {
+                    log.push(format!(
+                        "topics skipped for {owner}/{repo} — no allowlisted repos this cycle"
+                    ));
+                    continue;
+                }
                 if !repo_allowed(repo, allowed_repos) {
                     log.push(format!(
-                        "topics skipped for {owner}/{repo} — not in live snapshot (LLM invented?)"
+                        "topics skipped for {owner}/{repo} — not in live repos (LLM invented?)"
                     ));
                     continue;
                 }

@@ -149,7 +149,12 @@ async fn auto_apply_github(settings: &Settings, json: &Value, snapshot: &str) {
     }
 
     let owner = github_login(&settings.github).unwrap_or_default();
-    let allowed = crate::github::repos_from_snapshot(snapshot);
+    let mut allowed = crate::github::list_owner_repos(&owner)
+        .await
+        .unwrap_or_default();
+    if allowed.is_empty() {
+        allowed = crate::github::repos_from_snapshot(snapshot);
+    }
     let mut applied_any = false;
 
     let actions = json
@@ -254,10 +259,16 @@ async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str
         .unwrap_or("")
         .trim();
 
+    // Drop stale open overviews / duplicate slots before inserting.
+    let _ = db::prune_open_profile_suggestions(platform).await;
+
     let mut n = 0;
     if !summary.is_empty() {
         let overview = format!("{platform}: overview");
-        if !db::profile_suggestion_duplicate(platform, &overview, summary).await {
+        let open_overview = db::profile_open_kind_count(platform, "overview").await;
+        if open_overview == 0
+            && !db::profile_suggestion_duplicate(platform, &overview, summary).await
+        {
             let _ = db::insert_profile_suggestion(
                 platform,
                 &overview,
@@ -388,6 +399,7 @@ async fn sync_github_bio_notes_from_json(json: &Value) {
     if notes.contains(&bio) {
         return;
     }
+    let had_marker = notes.contains(marker);
     // Replace previous blocked-bio block if present.
     if let Some(idx) = notes.find(marker) {
         let after = &notes[idx + marker.len()..];
@@ -408,11 +420,14 @@ async fn sync_github_bio_notes_from_json(json: &Value) {
     .bind(&notes)
     .execute(db::pool())
     .await;
-    db::log_profile_event(
-        "info",
-        "GitHub bio saved to Profile notes for manual paste (API write blocked)",
-    )
-    .await;
+    // Only announce the first save; quiet updates after that.
+    if !had_marker {
+        db::log_profile_event(
+            "info",
+            "GitHub bio saved to Profile notes for manual paste (API write blocked)",
+        )
+        .await;
+    }
 }
 
 async fn sync_linkedin_notes_from_json(json: &Value) {
