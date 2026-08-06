@@ -274,11 +274,11 @@ pub async fn profile_suggestion_duplicate(platform: &str, title: &str, body: &st
 
 /// Count open (`new`) suggestions whose title matches a kind (bio/headline/about/overview).
 pub async fn profile_open_kind_count(platform: &str, kind: &str) -> i64 {
-    let like = format!("%{kind}%");
+    let like = format!("%{kind}%").to_ascii_lowercase();
     let row: Option<(i64,)> = sqlx::query_as(
         r#"
         SELECT COUNT(*) FROM profile_suggestions
-        WHERE platform = ? AND status = 'new' AND lower(title) LIKE lower(?)
+        WHERE platform = ? AND status = 'new' AND lower(title) LIKE ?
         "#,
     )
     .bind(platform)
@@ -300,12 +300,12 @@ pub async fn prune_open_profile_suggestions(platform: &str) -> anyhow::Result<u6
         let ids: Vec<(i64,)> = sqlx::query_as(
             r#"
             SELECT id FROM profile_suggestions
-            WHERE platform = ? AND status = 'new' AND lower(title) LIKE lower(?)
+            WHERE platform = ? AND status = 'new' AND lower(title) LIKE ?
             ORDER BY id DESC
             "#,
         )
         .bind(platform)
-        .bind(&like)
+        .bind(like.to_ascii_lowercase())
         .fetch_all(pool())
         .await?;
         // Keep newest; dismiss the rest.
@@ -322,11 +322,65 @@ pub async fn prune_open_profile_suggestions(platform: &str) -> anyhow::Result<u6
     Ok(n)
 }
 
+/// Nuclear cleanup: dismiss every open overview across platforms, and cap open copy slots.
+pub async fn prune_all_profile_suggestion_spam() -> anyhow::Result<u64> {
+    let mut n = 0u64;
+    // 1) Dismiss ALL open overviews (they are noise — actionable copy is bio/headline/About).
+    let res = sqlx::query(
+        r#"
+        UPDATE profile_suggestions
+        SET status = 'dismissed', updated_at = datetime('now')
+        WHERE status = 'new' AND lower(title) LIKE '%overview%'
+        "#,
+    )
+    .execute(pool())
+    .await?;
+    n += res.rows_affected();
+
+    for platform in ["github", "linkedin", "general"] {
+        n += prune_open_profile_suggestions(platform).await?;
+    }
+
+    // 2) Hard cap: keep at most 6 newest `new` suggestions total.
+    let ids: Vec<(i64,)> = sqlx::query_as(
+        r#"
+        SELECT id FROM profile_suggestions
+        WHERE status = 'new'
+        ORDER BY id DESC
+        "#,
+    )
+    .fetch_all(pool())
+    .await?;
+    for (id,) in ids.into_iter().skip(6) {
+        let res = sqlx::query(
+            "UPDATE profile_suggestions SET status = 'dismissed', updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(id)
+        .execute(pool())
+        .await?;
+        n += res.rows_affected();
+    }
+    Ok(n)
+}
+
+pub async fn count_open_profile_suggestions() -> i64 {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT COUNT(*) FROM profile_suggestions WHERE status = 'new'",
+    )
+    .fetch_optional(pool())
+    .await
+    .ok()
+    .flatten();
+    row.map(|r| r.0).unwrap_or(0)
+}
+
 pub async fn list_profile_suggestions(limit: i64) -> anyhow::Result<Vec<ProfileSuggestion>> {
+    // Prefer actionable copy; hide overview noise from the default feed.
     let rows = sqlx::query_as::<_, ProfileSuggestion>(
         r#"
         SELECT * FROM profile_suggestions
         WHERE status != 'dismissed'
+          AND lower(title) NOT LIKE '%overview%'
         ORDER BY CASE status WHEN 'new' THEN 0 WHEN 'kept' THEN 1 ELSE 2 END,
                  priority ASC, id DESC
         LIMIT ?

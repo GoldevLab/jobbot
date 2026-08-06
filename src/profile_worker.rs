@@ -32,6 +32,16 @@ pub fn spawn() -> ProfileWorkerHandle {
 
 async fn run_loop(stop: Arc<AtomicBool>) -> Result<()> {
     db::log_profile_event("info", "profile worker started (paused until Run)").await;
+    // One-shot: clear overview spam left from older builds.
+    if let Ok(n) = db::prune_all_profile_suggestion_spam().await {
+        if n > 0 {
+            db::log_profile_event(
+                "info",
+                format!("cleared {n} stale/duplicate profile suggestion(s)"),
+            )
+            .await;
+        }
+    }
     let mut idx: usize = 0;
     while !stop.load(Ordering::Relaxed) {
         let settings = match db::get_settings().await {
@@ -45,6 +55,22 @@ async fn run_loop(stop: Arc<AtomicBool>) -> Result<()> {
 
         if settings.profile_worker_running == 0 {
             tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+
+        // Back off hard when the queue is already full of open items.
+        let open = db::count_open_profile_suggestions().await;
+        if open >= 6 {
+            db::log_profile_event(
+                "info",
+                format!("coach idle — {open} open suggestions (Keep/Dismiss first)"),
+            )
+            .await;
+            tokio::time::sleep(Duration::from_secs(
+                settings.rate_limit_secs.max(180) as u64,
+            ))
+            .await;
+            let _ = db::prune_all_profile_suggestion_spam().await;
             continue;
         }
 
@@ -64,8 +90,10 @@ async fn run_loop(stop: Arc<AtomicBool>) -> Result<()> {
             }
         }
 
+        let _ = db::prune_all_profile_suggestion_spam().await;
+
         // Slow loop so OpenRouter + apply worker are not starved.
-        let pause = settings.rate_limit_secs.max(60) as u64;
+        let pause = settings.rate_limit_secs.max(90) as u64;
         tokio::time::sleep(Duration::from_secs(pause)).await;
     }
     Ok(())
@@ -75,6 +103,15 @@ async fn run_loop(stop: Arc<AtomicBool>) -> Result<()> {
 pub async fn run_analyze_now() -> Result<()> {
     let settings = db::get_settings().await?;
     db::log_profile_event("info", "manual profile analyze started").await;
+    if let Ok(n) = db::prune_all_profile_suggestion_spam().await {
+        if n > 0 {
+            db::log_profile_event(
+                "info",
+                format!("cleared {n} stale/duplicate profile suggestion(s)"),
+            )
+            .await;
+        }
+    }
     for platform in PLATFORMS {
         match coach_platform(platform, &settings).await {
             Ok(n) => {
@@ -259,28 +296,19 @@ async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str
         .unwrap_or("")
         .trim();
 
-    // Drop stale open overviews / duplicate slots before inserting.
-    let _ = db::prune_open_profile_suggestions(platform).await;
+    // Drop stale duplicates before inserting. Never persist overview rows — they spam the UI.
+    let _ = db::prune_all_profile_suggestion_spam().await;
+    if !summary.is_empty() {
+        // Keep summary only in the activity log, not as a suggestion card.
+        db::log_profile_event(
+            "info",
+            format!("{platform} summary: {}", style::truncate(summary, 220)),
+        )
+        .await;
+    }
 
     let mut n = 0;
-    if !summary.is_empty() {
-        let overview = format!("{platform}: overview");
-        let open_overview = db::profile_open_kind_count(platform, "overview").await;
-        if open_overview == 0
-            && !db::profile_suggestion_duplicate(platform, &overview, summary).await
-        {
-            let _ = db::insert_profile_suggestion(
-                platform,
-                &overview,
-                summary,
-                1,
-                snapshot.map(|s| style::truncate(s, 800)).as_deref(),
-            )
-            .await;
-            n += 1;
-        }
-    }
-    for item in suggestions.iter().take(6) {
+    for item in suggestions.iter().take(4) {
         let title = item
             .get("title")
             .and_then(|v| v.as_str())
@@ -292,6 +320,10 @@ async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str
             .unwrap_or("")
             .trim();
         if body.is_empty() {
+            continue;
+        }
+        let title_l = title.to_ascii_lowercase();
+        if title_l.contains("overview") {
             continue;
         }
         let priority = item
@@ -308,8 +340,17 @@ async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str
             if db::profile_open_kind_count(&plat, kind).await >= 1 {
                 continue;
             }
+        } else if db::count_open_profile_suggestions().await >= 6 {
+            continue;
         }
-        db::insert_profile_suggestion(&plat, title, body, priority, None).await?;
+        db::insert_profile_suggestion(
+            &plat,
+            title,
+            body,
+            priority,
+            snapshot.map(|s| style::truncate(s, 800)).as_deref(),
+        )
+        .await?;
         n += 1;
     }
 
@@ -420,8 +461,9 @@ async fn sync_github_bio_notes_from_json(json: &Value) {
     .bind(&notes)
     .execute(db::pool())
     .await;
-    // Only announce the first save; quiet updates after that.
-    if !had_marker {
+    // Announce at most once per process.
+    static NOTES_LOGGED: AtomicBool = AtomicBool::new(false);
+    if !had_marker && !NOTES_LOGGED.swap(true, Ordering::Relaxed) {
         db::log_profile_event(
             "info",
             "GitHub bio saved to Profile notes for manual paste (API write blocked)",
