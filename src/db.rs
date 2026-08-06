@@ -620,6 +620,44 @@ pub async fn update_job_status(
     Ok(())
 }
 
+pub async fn update_job_apply_url(id: i64, apply_url: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE jobs SET apply_url = ?, updated_at = datetime('now')
+        WHERE id = ?
+        "#,
+    )
+    .bind(apply_url)
+    .bind(id)
+    .execute(pool())
+    .await?;
+    Ok(())
+}
+
+/// Ready drafts whose apply_url is missing or still on web3.career (not an ATS).
+pub async fn jobs_needing_apply_enrich(limit: i64) -> anyhow::Result<Vec<Job>> {
+    let rows = sqlx::query_as::<_, Job>(
+        r#"
+        SELECT * FROM jobs
+        WHERE status IN ('ready', 'manual', 'ready_draft')
+          AND (
+            apply_url IS NULL
+            OR trim(apply_url) = ''
+            OR lower(apply_url) LIKE '%web3.career%'
+          )
+          AND url LIKE '%web3.career%'
+        ORDER BY
+          CASE WHEN score IS NULL THEN 0 ELSE score END DESC,
+          id ASC
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool())
+    .await?;
+    Ok(rows)
+}
+
 pub async fn get_job(id: i64) -> anyhow::Result<Option<Job>> {
     let row = sqlx::query_as::<_, Job>("SELECT * FROM jobs WHERE id = ?")
         .bind(id)

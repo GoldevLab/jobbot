@@ -114,6 +114,16 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                 .map(|x| format!("{x:.0}"))
                 .unwrap_or_else(|| "—".into());
             let url = j.apply_url.clone().unwrap_or(j.url.clone());
+            let apply_hint = {
+                let u = j.apply_url.as_deref().unwrap_or("");
+                if crate::sources::web3_career::is_auto_applyable_url(u) {
+                    "ATS — auto-apply when Chrome local"
+                } else if u.is_empty() || u.contains("web3.career") {
+                    "manual — no external ATS link yet"
+                } else {
+                    "manual — open & paste from draft"
+                }
+            };
             let badge = status_badge(&j.status);
             let pitch = draft_pitch(&j.draft_json);
             let detail = format!("/jobs/{}", j.id);
@@ -124,6 +134,7 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                     <td>
                         <strong>{title}</strong>
                         <div class="muted">{format!("{company} — {}", j.location)}</div>
+                        <div class="muted">{apply_hint}</div>
                         {if !pitch.is_empty() {
                             view! { <div class="pitch">{pitch}</div> }
                         } else if !err.is_empty() && j.status == "failed" {

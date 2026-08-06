@@ -104,6 +104,13 @@ async fn run_loop(stop: Arc<AtomicBool>, chrome: SharedChrome) -> Result<()> {
             db::log_event(None, "warn", format!("draft: {e:#}")).await;
         }
 
+        // Resolve external ATS links for ready drafts stuck on web3.career.
+        if tick == 1 || tick % 5 == 0 {
+            if let Err(e) = enrich_ready_apply_urls(6).await {
+                db::log_event(None, "warn", format!("enrich apply urls: {e:#}")).await;
+            }
+        }
+
         if settings.auto_apply != 0 {
             if let Err(e) = apply_batch(&chrome, &settings, 1).await {
                 db::log_event(None, "warn", format!("apply: {e:#}")).await;
@@ -415,6 +422,52 @@ fn save_draft_file(
         serde_json::to_string_pretty(draft)?
     );
     std::fs::write(dir.join(format!("{id}.md")), body)?;
+    Ok(())
+}
+
+async fn enrich_ready_apply_urls(limit: i64) -> Result<()> {
+    let jobs = db::jobs_needing_apply_enrich(limit).await?;
+    if jobs.is_empty() {
+        return Ok(());
+    }
+    let client = reqwest::Client::builder()
+        .user_agent("jobbot/0.1 (+https://github.com/GoldevLab/jobbot)")
+        .timeout(Duration::from_secs(25))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()?;
+    let mut found = 0u32;
+    for job in jobs {
+        match web3_career::resolve_external_apply(&client, &job.url).await {
+            Ok(Some(url)) if web3_career::is_auto_applyable_url(&url) || !url.contains("web3.career") => {
+                db::update_job_apply_url(job.id, &url).await?;
+                found += 1;
+                db::log_event(
+                    Some(job.id),
+                    "info",
+                    format!("resolved apply URL → {url}"),
+                )
+                .await;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                db::log_event(
+                    Some(job.id),
+                    "warn",
+                    format!("apply URL enrich failed: {e:#}"),
+                )
+                .await;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+    if found > 0 {
+        db::log_event(
+            None,
+            "info",
+            format!("enriched {found} external apply URL(s)"),
+        )
+        .await;
+    }
     Ok(())
 }
 

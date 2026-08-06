@@ -76,13 +76,16 @@ pub async fn discover(keywords: &str, locations: &str) -> Result<Vec<DiscoveredJ
         kw_ok && loc_ok
     });
 
-    let enrich_n = out.len().min(8);
+    // Enrich as many as we can without hammering the board (~1.5s each).
+    let enrich_n = out.len().min(24);
     for job in out.iter_mut().take(enrich_n) {
         if let Ok(detail) = fetch_detail(&client, &job.url).await {
-            if let Some(apply) = detail.apply_url {
-                match resolve_apply_url(&client, &apply).await {
+            if let Some(apply) = detail.apply_url.as_deref() {
+                match resolve_apply_url(&client, apply).await {
                     Ok(resolved) => job.apply_url = Some(resolved),
-                    Err(_) if !apply.contains("web3.career") => job.apply_url = Some(apply),
+                    Err(_) if !apply.contains("web3.career") => {
+                        job.apply_url = Some(apply.to_string())
+                    }
                     Err(_) => {}
                 }
             }
@@ -99,6 +102,31 @@ pub async fn discover(keywords: &str, locations: &str) -> Result<Vec<DiscoveredJ
     }
 
     Ok(out)
+}
+
+/// Fetch job page and return a resolved external ATS apply URL when possible.
+pub async fn resolve_external_apply(
+    client: &reqwest::Client,
+    job_page_url: &str,
+) -> Result<Option<String>> {
+    let detail = fetch_detail(client, job_page_url).await?;
+    let Some(apply) = detail.apply_url else {
+        return Ok(None);
+    };
+    match resolve_apply_url(client, &apply).await {
+        Ok(resolved) => Ok(Some(resolved)),
+        Err(_) if !apply.contains("web3.career") => Ok(Some(apply)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// True when Chrome auto-apply can target this URL (Recruitee / Greenhouse / Ashby).
+pub fn is_auto_applyable_url(url: &str) -> bool {
+    let u = url.to_lowercase();
+    u.contains("recruitee")
+        || u.contains("careers.tether")
+        || u.contains("greenhouse")
+        || u.contains("ashbyhq")
 }
 
 async fn resolve_apply_url(client: &reqwest::Client, url: &str) -> Result<String> {
