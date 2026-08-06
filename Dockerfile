@@ -45,7 +45,7 @@ ENV RESUMA_PAGES_ROOT=/app/pages
 ENV RESUMA_DATA_DIR=/data
 ENV DATABASE_URL=sqlite:/data/jobbot.db
 ENV JOBBOT_AUTO_START=1
-ENV JOBBOT_AUTO_APPLY=false
+ENV JOBBOT_AUTO_APPLY=true
 ENV JOBBOT_CV_PATH=/app/cv/CV_Golfredo_Perez_Tether_Backend.pdf
 ENV RUST_LOG=info
 
