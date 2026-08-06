@@ -22,6 +22,7 @@ anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "gzip", "multipart"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 scraper = "0.24"
 url = "2"
 uuid = { version = "1", features = ["v4"] }

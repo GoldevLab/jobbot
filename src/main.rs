@@ -159,6 +159,28 @@ async fn analyze_profiles_now(
 }
 
 #[submit]
+async fn mark_job_applied(
+    form: IdForm,
+    _req: &FlowRequest,
+) -> std::result::Result<Redirect, SubmitError> {
+    let id: i64 = form.id.trim().parse().unwrap_or(0);
+    if id > 0 {
+        db::update_job_status(
+            id,
+            "applied",
+            None,
+            None,
+            Some("marked applied manually from UI"),
+        )
+        .await
+        .map_err(|_| SubmitError::new("Could not update job"))?;
+        db::log_event(Some(id), "info", "marked applied manually").await;
+        return Ok(Redirect::to(&format!("/jobs/{id}")));
+    }
+    Ok(Redirect::to("/"))
+}
+
+#[submit]
 async fn keep_profile_suggestion(
     form: IdForm,
     _req: &FlowRequest,
@@ -358,6 +380,7 @@ async fn main() -> std::io::Result<()> {
         .auto_pages(pages_dir, PagesRegistry)
         .route("/jobs/{id}/packet.txt", get(download_packet_txt))
         .route("/jobs/{id}/cv.pdf", get(download_cv_pdf))
+        .route("/jobs/{id}/kit.zip", get(download_kit_zip))
         .serve(FlowServeOptions::from_env())
         .await
 }
@@ -386,6 +409,35 @@ async fn download_packet_txt(Path(id): Path<i64>) -> Response {
         headers.insert(header::CONTENT_DISPOSITION, v);
     }
     (headers, text).into_response()
+}
+
+async fn download_kit_zip(Path(id): Path<i64>) -> Response {
+    let Ok(Some(job)) = db::get_job(id).await else {
+        return (StatusCode::NOT_FOUND, "job not found").into_response();
+    };
+    let Ok(settings) = db::get_settings().await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "settings error").into_response();
+    };
+    let draft: serde_json::Value = job
+        .draft_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::json!({}));
+    let text = packet::build_packet_text(&job, &settings, &draft);
+    let _ = packet::save_packet_file(job.id, &text);
+    let Ok(bytes) = packet::build_kit_zip(&text, &settings.cv_path) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "could not build zip").into_response();
+    };
+    let filename = packet::safe_filename(&job.title, &job.company, "zip");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/zip"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")) {
+        headers.insert(header::CONTENT_DISPOSITION, v);
+    }
+    (headers, bytes).into_response()
 }
 
 async fn download_cv_pdf(Path(id): Path<i64>) -> Response {

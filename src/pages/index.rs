@@ -75,6 +75,24 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
         .iter()
         .filter(|j| matches!(j.status.as_str(), "ready" | "manual"))
         .count();
+    let kit_only = jobs
+        .iter()
+        .filter(|j| {
+            matches!(j.status.as_str(), "ready" | "manual")
+                && !crate::sources::web3_career::is_http_auto_applyable_url(
+                    j.apply_url.as_deref().unwrap_or(""),
+                )
+        })
+        .count();
+    let http_ready = jobs
+        .iter()
+        .filter(|j| {
+            matches!(j.status.as_str(), "ready" | "manual")
+                && crate::sources::web3_career::is_http_auto_applyable_url(
+                    j.apply_url.as_deref().unwrap_or(""),
+                )
+        })
+        .count();
     let applied = jobs.iter().filter(|j| j.status == "applied").count();
     let skipped = jobs.iter().filter(|j| j.status == "skipped").count();
 
@@ -116,12 +134,14 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
             let url = j.apply_url.clone().unwrap_or(j.url.clone());
             let apply_hint = {
                 let u = j.apply_url.as_deref().unwrap_or("");
-                if crate::sources::web3_career::is_auto_applyable_url(u) {
-                    "ATS — auto-apply when Chrome local"
+                if crate::sources::web3_career::is_http_auto_applyable_url(u) {
+                    "ATS — HTTP auto-apply"
+                } else if crate::sources::web3_career::is_auto_applyable_url(u) {
+                    "ATS — needs Chrome local"
                 } else if u.is_empty() || u.contains("web3.career") {
-                    "manual — no external ATS link yet"
+                    "manual — download kit.zip"
                 } else {
-                    "manual — open & paste from draft"
+                    "manual — kit.zip + paste"
                 }
             };
             let badge = status_badge(&j.status);
@@ -147,7 +167,7 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                     <td class="row-actions">
                         <a href={detail.clone()}>"draft"</a>
                         {" · "}
-                        <a href={format!("/jobs/{}/packet.txt", j.id)}>"kit"</a>
+                        <a href={format!("/jobs/{}/kit.zip", j.id)}>"zip"</a>
                         {" · "}
                         <a href={format!("/jobs/{}/cv.pdf", j.id)}>"cv"</a>
                         {" · "}
@@ -174,7 +194,7 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                     </span>
                     <span class="muted">
                         {format!(
-                            "queue: {discovered} new · {scoring} in-flight · {ready} ready/manual · {applied} applied · {skipped} skipped · auto-apply={}",
+                            "queue: {discovered} new · {scoring} in-flight · {ready} ready/manual ({http_ready} HTTP · {kit_only} kit) · {applied} applied · {skipped} skipped · auto-apply={}",
                             if auto_apply { "on" } else { "off" }
                         )}
                     </span>

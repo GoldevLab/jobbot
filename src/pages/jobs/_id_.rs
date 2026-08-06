@@ -77,7 +77,10 @@ fn render_job(j: Job) -> View {
         .unwrap_or_else(|| "—".into());
     let packet_href = format!("/jobs/{}/packet.txt", j.id);
     let cv_href = format!("/jobs/{}/cv.pdf", j.id);
+    let zip_href = format!("/jobs/{}/kit.zip", j.id);
+    let job_id = j.id.to_string();
     let is_manual = matches!(j.status.as_str(), "manual" | "ready" | "failed");
+    let can_mark = matches!(j.status.as_str(), "manual" | "ready" | "failed");
     let err = j.last_error.clone().unwrap_or_default();
 
     view! {
@@ -91,13 +94,24 @@ fn render_job(j: Job) -> View {
                     <div class="card" style="margin:1rem 0;background:rgba(0,0,0,0.04)">
                         <h2 style="margin-top:0">"Manual apply kit"</h2>
                         <p class="muted">
-                            "Bot cannot auto-submit this one. Download the CV PDF + paste kit, then open the apply page."
+                            "Bot cannot auto-submit this one. Download the ZIP (CV + paste kit), apply by hand, then mark applied."
                         </p>
                         <div class="row">
-                            <a class="btn btn-primary" href={cv_href.clone()} download="cv.pdf">"Download CV (PDF)"</a>
-                            <a class="btn" href={packet_href.clone()} download="packet.txt">"Download paste kit (.txt)"</a>
+                            <a class="btn btn-primary" href={zip_href.clone()} download="kit.zip">"Download kit (.zip)"</a>
+                            <a class="btn" href={cv_href.clone()} download="cv.pdf">"CV PDF"</a>
+                            <a class="btn" href={packet_href.clone()} download="packet.txt">"Paste kit (.txt)"</a>
                             <a class="btn btn-ghost" href={url.clone()} target="_blank" rel="noreferrer">"Open apply page"</a>
                         </div>
+                        {if can_mark {
+                            view! {
+                                <Form submit={crate::mark_job_applied}>
+                                    <input type="hidden" name="id" value={job_id.clone()} />
+                                    <button class="btn" type="submit">"Mark as applied"</button>
+                                </Form>
+                            }
+                        } else {
+                            View::empty()
+                        }}
                         {if !err.is_empty() {
                             view! { <p class="muted">{format!("Note: {err}")}</p> }
                         } else {
@@ -109,6 +123,7 @@ fn render_job(j: Job) -> View {
                 view! {
                     <div class="row">
                         <a class="btn btn-primary" href={url.clone()} target="_blank" rel="noreferrer">"Open apply page"</a>
+                        <a class="btn" href={zip_href.clone()} download="kit.zip">"Kit ZIP"</a>
                         <a class="btn" href={packet_href.clone()} download="packet.txt">"Paste kit"</a>
                         <a class="btn btn-ghost" href={cv_href.clone()} download="cv.pdf">"CV PDF"</a>
                     </div>

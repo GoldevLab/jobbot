@@ -120,13 +120,21 @@ pub async fn resolve_external_apply(
     }
 }
 
-/// True when Chrome auto-apply can target this URL (Recruitee / Greenhouse / Ashby).
+/// True when auto-apply (HTTP or Chrome) can target this URL.
 pub fn is_auto_applyable_url(url: &str) -> bool {
     let u = url.to_lowercase();
     u.contains("recruitee")
         || u.contains("careers.tether")
         || u.contains("greenhouse")
         || u.contains("ashbyhq")
+        || u.contains("lever.co")
+}
+
+/// HTTP (no Chrome) auto-apply — Recruitee Careers Site API only today.
+/// Greenhouse Job Board POST needs each company's board API key.
+pub fn is_http_auto_applyable_url(url: &str) -> bool {
+    let u = url.to_lowercase();
+    u.contains("recruitee") || u.contains("careers.tether")
 }
 
 async fn resolve_apply_url(client: &reqwest::Client, url: &str) -> Result<String> {
@@ -283,12 +291,60 @@ async fn fetch_detail(client: &reqwest::Client, url: &str) -> Result<Detail> {
     Ok(parse_detail(&html, url))
 }
 
+fn ats_priority(url: &str) -> i32 {
+    let u = url.to_ascii_lowercase();
+    if u.contains("recruitee.com") || u.contains("careers.tether") {
+        100
+    } else if u.contains("greenhouse.io")
+        || u.contains("ashbyhq.com")
+        || u.contains("jobs.lever.co")
+        || u.contains("lever.co")
+    {
+        95
+    } else if u.contains("myworkdayjobs.com")
+        || u.contains("workday.com")
+        || u.contains("smartrecruiters.com")
+        || u.contains("workable.com")
+        || u.contains("breezy.hr")
+        || u.contains("jobvite.com")
+        || u.contains("wellfound.com")
+        || u.contains("angel.co")
+    {
+        85
+    } else if !u.contains("web3.career") && (u.contains("http://") || u.contains("https://")) {
+        50
+    } else {
+        0
+    }
+}
+
 fn parse_detail(html: &str, _page_url: &str) -> Detail {
     let doc = Html::parse_document(html);
     let a_sel = Selector::parse("a[href]").unwrap();
     // Prefer ATS apply links over web3.career /i/ trackers
     let mut apply_url = None;
     let mut apply_priority = 0i32;
+
+    let consider = |abs: &str, text_hint: &str, apply_url: &mut Option<String>, apply_priority: &mut i32| {
+        let mut prio = ats_priority(abs);
+        if prio == 0 {
+            return;
+        }
+        if text_hint.contains("apply") {
+            prio += 5;
+        }
+        if abs.contains("web3.career") {
+            if abs.contains("/i/") {
+                prio = 20;
+            } else {
+                return;
+            }
+        }
+        if prio > *apply_priority {
+            *apply_priority = prio;
+            *apply_url = Some(abs.to_string());
+        }
+    };
 
     for a in doc.select(&a_sel) {
         let href = a.value().attr("href").unwrap_or("");
@@ -298,29 +354,30 @@ fn parse_detail(html: &str, _page_url: &str) -> Detail {
         } else {
             absolutize(href)
         };
+        consider(&abs, &t, &mut apply_url, &mut apply_priority);
+    }
 
-        let prio = if abs.contains("recruitee.com") || abs.contains("careers.tether") {
-            100
-        } else if abs.contains("greenhouse.io")
-            || abs.contains("ashbyhq.com")
-            || abs.contains("lever.co")
-            || abs.contains("workday")
-        {
-            90
-        } else if t.contains("apply") && !abs.contains("web3.career") {
-            80
-        } else if t.contains("apply") && abs.contains("/i/") {
-            // tracking shortlink — keep low priority; may resolve later
-            20
-        } else if t.contains("apply") {
-            10
-        } else {
-            continue;
-        };
+    // Scan raw HTML for ATS hosts even when not in <a href>.
+    let ats_re = Regex::new(
+        r#"https?://[^\s"'<>]+(?:recruitee\.com|careers\.tether\.io|greenhouse\.io|ashbyhq\.com|lever\.co|myworkdayjobs\.com|smartrecruiters\.com|workable\.com)[^\s"'<>]*"#,
+    )
+    .unwrap();
+    for m in ats_re.find_iter(html) {
+        let abs = m.as_str().trim_end_matches(['\\', ')', ']', ',', ';']).to_string();
+        consider(&abs, "apply", &mut apply_url, &mut apply_priority);
+    }
 
-        if prio > apply_priority {
-            apply_priority = prio;
-            apply_url = Some(abs);
+    // JSON-LD applicationUrl / url
+    if let Ok(script_sel) = Selector::parse(r#"script[type="application/ld+json"]"#) {
+        for el in doc.select(&script_sel) {
+            let raw = el.text().collect::<String>();
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                for key in ["applicationUrl", "url", "sameAs"] {
+                    if let Some(u) = v.get(key).and_then(|x| x.as_str()) {
+                        consider(u, "apply", &mut apply_url, &mut apply_priority);
+                    }
+                }
+            }
         }
     }
 

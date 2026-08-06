@@ -172,6 +172,41 @@ pub fn save_packet_file(job_id: i64, text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// ZIP: packet.txt + CV PDF (when present on disk).
+pub fn build_kit_zip(packet_txt: &str, cv_path: &str) -> anyhow::Result<Vec<u8>> {
+    use std::io::{Cursor, Write};
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    let mut buf = Cursor::new(Vec::new());
+    {
+        let mut zip = ZipWriter::new(&mut buf);
+        let opts = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("application-kit.txt", opts)?;
+        zip.write_all(packet_txt.as_bytes())?;
+
+        let cv = Path::new(cv_path);
+        if cv.is_file() {
+            let bytes = std::fs::read(cv)?;
+            let name = cv
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("cv.pdf");
+            zip.start_file(name, opts)?;
+            zip.write_all(&bytes)?;
+        } else {
+            zip.start_file("CV-MISSING.txt", opts)?;
+            zip.write_all(
+                format!("CV not found at {cv_path}. Add JOBBOT_CV_PATH / Settings CV path.\n")
+                    .as_bytes(),
+            )?;
+        }
+        zip.finish()?;
+    }
+    Ok(buf.into_inner())
+}
+
 pub fn safe_filename(title: &str, company: &str, ext: &str) -> String {
     let raw = format!("{company}-{title}");
     let slug: String = raw
