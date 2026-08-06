@@ -89,7 +89,7 @@ fn render_profile(
             <div class="card">
                 <h1>"Profile coach"</h1>
                 <p class="muted">
-                    "Connected to the apply queue: drafts teach the coach, kept bios/headlines shape new pitches. Offline: both workers auto-start on Fly. GitHub topics auto-push with GITHUB_TOKEN; bio needs a classic PAT with `user` scope (fine-grained often 404s on PATCH /user). LinkedIn has no public write API — About/headline auto-save into Profile notes for one paste. Keep also pushes GitHub when possible. Positioning: remote worldwide, not Norway-only."
+                    "Connected to the apply queue: drafts teach the coach, kept bios/headlines shape new pitches. Offline: both workers auto-start on Fly. Topics auto-push with GITHUB_TOKEN. Bio needs classic PAT scope `user` — until then bio is saved into Profile notes (paste once on GitHub). LinkedIn About/headline also land in notes. Positioning: remote worldwide."
                 </p>
                 <div class="row">
                     <span class="status-pill">

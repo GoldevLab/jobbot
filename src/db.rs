@@ -272,6 +272,24 @@ pub async fn profile_suggestion_duplicate(platform: &str, title: &str, body: &st
     row.is_some()
 }
 
+/// Count open (`new`) suggestions whose title matches a kind (bio/headline/about/overview).
+pub async fn profile_open_kind_count(platform: &str, kind: &str) -> i64 {
+    let like = format!("%{kind}%");
+    let row: Option<(i64,)> = sqlx::query_as(
+        r#"
+        SELECT COUNT(*) FROM profile_suggestions
+        WHERE platform = ? AND status = 'new' AND lower(title) LIKE lower(?)
+        "#,
+    )
+    .bind(platform)
+    .bind(like)
+    .fetch_optional(pool())
+    .await
+    .ok()
+    .flatten();
+    row.map(|r| r.0).unwrap_or(0)
+}
+
 pub async fn list_profile_suggestions(limit: i64) -> anyhow::Result<Vec<ProfileSuggestion>> {
     let rows = sqlx::query_as::<_, ProfileSuggestion>(
         r#"

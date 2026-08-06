@@ -9,6 +9,8 @@ const UA: &str = "jobbot-profile-coach/0.1 (+https://github.com/GoldevLab/jobbot
 
 /// Once a PATCH /user returns 404, skip further bio attempts (token lacks profile write).
 static BIO_WRITE_BLOCKED: AtomicBool = AtomicBool::new(false);
+/// Log the blocked-bio explanation once per process (avoid activity spam).
+static BIO_BLOCK_NOTICE_SENT: AtomicBool = AtomicBool::new(false);
 
 pub fn token_from_env() -> Option<String> {
     for key in ["GITHUB_TOKEN", "GH_TOKEN", "JOBBOT_GITHUB_TOKEN"] {
@@ -24,6 +26,19 @@ pub fn token_from_env() -> Option<String> {
 
 pub fn bio_write_blocked() -> bool {
     BIO_WRITE_BLOCKED.load(Ordering::Relaxed)
+}
+
+/// One-shot notice for the profile activity log.
+pub fn take_bio_block_notice() -> Option<&'static str> {
+    if !BIO_WRITE_BLOCKED.load(Ordering::Relaxed) {
+        return None;
+    }
+    if BIO_BLOCK_NOTICE_SENT.swap(true, Ordering::Relaxed) {
+        return None;
+    }
+    Some(
+        "GitHub bio auto-apply disabled: GITHUB_TOKEN cannot PATCH /user. Create a classic PAT with scope `user` (https://github.com/settings/tokens) then: fly secrets set -a golfredo-jobbot GITHUB_TOKEN=ghp_… — topics will keep working; bio retries stop until restart with a new token.",
+    )
 }
 
 fn client(token: &str) -> Result<reqwest::Client> {
@@ -102,9 +117,7 @@ pub async fn authenticated_login() -> Result<String> {
 
 pub async fn set_authenticated_bio(bio: &str) -> Result<String> {
     if BIO_WRITE_BLOCKED.load(Ordering::Relaxed) {
-        return Err(anyhow!(
-            "bio write blocked: GITHUB_TOKEN lacks profile permission (need classic PAT with `user` scope, or fine-grained Account→Profile: Read and write)"
-        ));
+        return Err(anyhow!("bio write skipped (token lacks profile permission)"));
     }
     let token = token_from_env().ok_or_else(|| anyhow!("GITHUB_TOKEN not set"))?;
     let bio = sanitize_bio(bio);
@@ -120,7 +133,7 @@ pub async fn set_authenticated_bio(bio: &str) -> Result<String> {
     if status.as_u16() == 404 {
         BIO_WRITE_BLOCKED.store(true, Ordering::Relaxed);
         return Err(anyhow!(
-            "GitHub bio 404 — token can write repos but NOT profile. Create a classic PAT with scope `user` (https://github.com/settings/tokens) and set fly secrets set -a golfredo-jobbot GITHUB_TOKEN=ghp_…"
+            "GitHub bio 404 — token can write repos but NOT profile. Classic PAT needs scope `user`."
         ));
     }
     if !status.is_success() {
@@ -225,6 +238,10 @@ pub async fn apply_actions(
             .to_ascii_lowercase();
         match kind.as_str() {
             "set_bio" | "bio" | "github_bio" => {
+                if BIO_WRITE_BLOCKED.load(Ordering::Relaxed) {
+                    // Silent — take_bio_block_notice() already explained once.
+                    continue;
+                }
                 let value = action
                     .get("value")
                     .or_else(|| action.get("body"))
@@ -237,7 +254,10 @@ pub async fn apply_actions(
                 }
                 match set_authenticated_bio(value).await {
                     Ok(applied) => log.push(format!("applied GitHub bio ({})", applied.len())),
-                    Err(e) => log.push(format!("bio apply failed: {e:#}")),
+                    Err(e) => {
+                        // First 404 already sets blocked; only log that attempt.
+                        log.push(format!("bio apply failed: {e:#}"));
+                    }
                 }
             }
             "set_topics" | "topics" | "github_topics" => {
@@ -296,6 +316,9 @@ pub async fn apply_from_suggestion(
 ) -> Option<String> {
     let t = title.to_ascii_lowercase();
     if t.contains("bio") && !t.contains("linkedin") {
+        if BIO_WRITE_BLOCKED.load(Ordering::Relaxed) {
+            return None;
+        }
         return match set_authenticated_bio(body).await {
             Ok(b) => Some(format!("auto-applied GitHub bio ({})", b.len())),
             Err(e) => Some(format!("bio auto-apply failed: {e:#}")),

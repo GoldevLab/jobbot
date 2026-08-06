@@ -142,12 +142,10 @@ async fn auto_apply_github(settings: &Settings, json: &Value, snapshot: &str) {
         return;
     }
 
-    if crate::github::bio_write_blocked() {
-        db::log_profile_event(
-            "warn",
-            "GitHub bio write still blocked — need classic PAT with `user` scope (topics still work)",
-        )
-        .await;
+    if let Some(msg) = crate::github::take_bio_block_notice() {
+        db::log_profile_event("warn", msg).await;
+        // Keep a paste-ready bio in notes while API write is blocked.
+        sync_github_bio_notes_from_json(json).await;
     }
 
     let owner = github_login(&settings.github).unwrap_or_default();
@@ -166,6 +164,10 @@ async fn auto_apply_github(settings: &Settings, json: &Value, snapshot: &str) {
             let ok = line.starts_with("applied");
             if ok {
                 applied_any = true;
+            }
+            // Don't re-log every silent bio skip; only real apply outcomes.
+            if line.contains("bio write skipped") {
+                continue;
             }
             db::log_profile_event(if ok { "info" } else { "warn" }, &line).await;
         }
@@ -290,6 +292,12 @@ async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str
         if db::profile_suggestion_duplicate(&plat, title, body).await {
             continue;
         }
+        // Cap near-duplicate copy slots (same kind already open).
+        if let Some(kind) = suggestion_kind(title) {
+            if db::profile_open_kind_count(&plat, kind).await >= 1 {
+                continue;
+            }
+        }
         db::insert_profile_suggestion(&plat, title, body, priority, None).await?;
         n += 1;
     }
@@ -298,8 +306,113 @@ async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str
     if platform == "linkedin" {
         sync_linkedin_notes_from_json(json).await;
     }
+    if platform == "github" && crate::github::bio_write_blocked() {
+        sync_github_bio_notes_from_json(json).await;
+    }
 
     Ok(n)
+}
+
+fn suggestion_kind(title: &str) -> Option<&'static str> {
+    let t = title.to_ascii_lowercase();
+    if t.contains("headline") {
+        Some("headline")
+    } else if t.contains("about") {
+        Some("about")
+    } else if t.contains("bio") {
+        Some("bio")
+    } else if t.contains("overview") {
+        Some("overview")
+    } else {
+        None
+    }
+}
+
+async fn sync_github_bio_notes_from_json(json: &Value) {
+    let Some(arr) = json.get("suggestions").and_then(|v| v.as_array()) else {
+        return;
+    };
+    let mut bio = None;
+    for item in arr {
+        let title = item
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let body = item
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if body.is_empty() {
+            continue;
+        }
+        if title.contains("bio") {
+            bio = Some(crate::github::sanitize_bio(body));
+            break;
+        }
+    }
+    // Also accept structured actions.
+    if bio.is_none() {
+        if let Some(actions) = json.get("actions").and_then(|v| v.as_array()) {
+            for action in actions {
+                let kind = action
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if kind.contains("bio") {
+                    if let Some(v) = action
+                        .get("value")
+                        .or_else(|| action.get("body"))
+                        .and_then(|x| x.as_str())
+                    {
+                        let v = v.trim();
+                        if !v.is_empty() {
+                            bio = Some(crate::github::sanitize_bio(v));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let Some(bio) = bio else {
+        return;
+    };
+    let Ok(settings) = db::get_settings().await else {
+        return;
+    };
+    let marker = "GitHub bio (paste — API blocked):";
+    let mut notes = settings.profile_notes;
+    if notes.contains(&bio) {
+        return;
+    }
+    // Replace previous blocked-bio block if present.
+    if let Some(idx) = notes.find(marker) {
+        let after = &notes[idx + marker.len()..];
+        let end = after
+            .find("\n\n")
+            .map(|i| idx + marker.len() + i)
+            .unwrap_or(notes.len());
+        notes.replace_range(idx..end, "");
+        notes = notes.trim().to_string();
+    }
+    if !notes.is_empty() {
+        notes.push_str("\n\n");
+    }
+    notes.push_str(&format!("{marker}\n{bio}"));
+    let _ = sqlx::query(
+        "UPDATE settings SET profile_notes = ?, updated_at = datetime('now') WHERE id = 1",
+    )
+    .bind(&notes)
+    .execute(db::pool())
+    .await;
+    db::log_profile_event(
+        "info",
+        "GitHub bio saved to Profile notes for manual paste (API write blocked)",
+    )
+    .await;
 }
 
 async fn sync_linkedin_notes_from_json(json: &Value) {
