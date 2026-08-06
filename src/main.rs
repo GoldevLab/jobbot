@@ -198,8 +198,13 @@ async fn keep_profile_suggestion(
                         owner = "GoldevLab".into();
                     }
                 }
-                if let Some(msg) =
-                    github::apply_from_suggestion(&owner, &sug.title, &sug.body).await
+                if let Some(msg) = github::apply_from_suggestion(
+                    &owner,
+                    &sug.title,
+                    &sug.body,
+                    &[],
+                )
+                .await
                 {
                     db::log_profile_event("info", format!("keep→auto: {msg}")).await;
                     let _ = db::set_profile_suggestion_status(id, "applied").await;

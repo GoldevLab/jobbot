@@ -126,13 +126,13 @@ async fn coach_platform(platform: &str, settings: &Settings) -> Result<usize> {
 
     // Auto-apply GitHub (bio + topics) with no confirmation when token is set.
     if platform == "github" {
-        auto_apply_github(settings, &json).await;
+        auto_apply_github(settings, &json, &snapshot).await;
     }
 
     Ok(n)
 }
 
-async fn auto_apply_github(settings: &Settings, json: &Value) {
+async fn auto_apply_github(settings: &Settings, json: &Value, snapshot: &str) {
     if crate::github::token_from_env().is_none() {
         db::log_profile_event(
             "warn",
@@ -142,7 +142,16 @@ async fn auto_apply_github(settings: &Settings, json: &Value) {
         return;
     }
 
+    if crate::github::bio_write_blocked() {
+        db::log_profile_event(
+            "warn",
+            "GitHub bio write still blocked — need classic PAT with `user` scope (topics still work)",
+        )
+        .await;
+    }
+
     let owner = github_login(&settings.github).unwrap_or_default();
+    let allowed = crate::github::repos_from_snapshot(snapshot);
     let mut applied_any = false;
 
     let actions = json
@@ -152,7 +161,7 @@ async fn auto_apply_github(settings: &Settings, json: &Value) {
         .unwrap_or_default();
 
     if !actions.is_empty() {
-        let logs = crate::github::apply_actions(&owner, &actions).await;
+        let logs = crate::github::apply_actions(&owner, &actions, &allowed).await;
         for line in logs {
             let ok = line.starts_with("applied");
             if ok {
@@ -176,7 +185,9 @@ async fn auto_apply_github(settings: &Settings, json: &Value) {
             if title.is_empty() || body.is_empty() {
                 continue;
             }
-            if let Some(msg) = crate::github::apply_from_suggestion(&owner, title, body).await {
+            if let Some(msg) =
+                crate::github::apply_from_suggestion(&owner, title, body, &allowed).await
+            {
                 let ok = msg.contains("auto-applied");
                 if ok {
                     applied_any = true;
@@ -240,18 +251,22 @@ async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim();
-    if !summary.is_empty() {
-        let _ = db::insert_profile_suggestion(
-            platform,
-            &format!("{platform}: overview"),
-            summary,
-            1,
-            snapshot.map(|s| style::truncate(s, 800)).as_deref(),
-        )
-        .await;
-    }
 
-    let mut n = if summary.is_empty() { 0 } else { 1 };
+    let mut n = 0;
+    if !summary.is_empty() {
+        let overview = format!("{platform}: overview");
+        if !db::profile_suggestion_duplicate(platform, &overview, summary).await {
+            let _ = db::insert_profile_suggestion(
+                platform,
+                &overview,
+                summary,
+                1,
+                snapshot.map(|s| style::truncate(s, 800)).as_deref(),
+            )
+            .await;
+            n += 1;
+        }
+    }
     for item in suggestions.iter().take(6) {
         let title = item
             .get("title")
@@ -272,6 +287,9 @@ async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str
             .unwrap_or(2)
             .clamp(1, 3);
         let plat = normalize_platform(platform, title);
+        if db::profile_suggestion_duplicate(&plat, title, body).await {
+            continue;
+        }
         db::insert_profile_suggestion(&plat, title, body, priority, None).await?;
         n += 1;
     }

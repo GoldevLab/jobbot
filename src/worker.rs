@@ -348,7 +348,7 @@ async fn draft_batch(agent: &LlmAgent, settings: &Settings, limit: i64) -> Resul
                     ],
                     "emphasize": ["Node.js", "TypeScript", "PostgreSQL", "RPC", "Web3"],
                     "why_company": format!(
-                        "I've been building Node/TypeScript backends and Web3 services for years — marketplaces, indexers talking to chain RPC, and stuff that has to stay up on Fly. {} looks like a place where that experience actually matters. I work remote from Venezuela and can overlap Norway/EU hours.",
+                        "I've been building Node/TypeScript backends and Web3 services for years — marketplaces, indexers talking to chain RPC, and stuff that has to stay up on Fly. {} looks like a place where that experience actually matters. I work remote from Venezuela, open to worldwide remote and flexible timezone overlap.",
                         job.company
                     ),
                     "node_experience": "5_plus",

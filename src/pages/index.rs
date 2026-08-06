@@ -64,6 +64,8 @@ pub fn page(_req: FlowRequest) -> View {
 
 fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
     let running = s.worker_running != 0;
+    let auto_apply = s.auto_apply != 0;
+    let chrome_hint = std::env::var("JOBBOT_CHROME_CDP").ok().filter(|u| !u.trim().is_empty());
     let discovered = jobs.iter().filter(|j| j.status == "discovered").count();
     let scoring = jobs
         .iter()
@@ -75,6 +77,17 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
         .count();
     let applied = jobs.iter().filter(|j| j.status == "applied").count();
     let skipped = jobs.iter().filter(|j| j.status == "skipped").count();
+
+    let apply_banner = if !auto_apply {
+        "Auto-apply is OFF on this host (Fly sets JOBBOT_AUTO_APPLY=false — no Chrome). Discover / score / draft run 24/7; apply locally with Chrome CDP + Auto-apply in Settings, or open each draft and submit by hand."
+            .to_string()
+    } else if chrome_hint.is_none() {
+        "Auto-apply is ON but JOBBOT_CHROME_CDP is unset — start ./scripts/chrome-cdp.sh locally. Only Recruitee / Greenhouse / Ashby URLs auto-submit; web3.career links stay ready/manual."
+            .to_string()
+    } else {
+        "Auto-apply ON — submits Recruitee / Greenhouse / Ashby when a ready job has an ATS URL. Other boards stay ready for manual paste from /jobs/:id."
+            .to_string()
+    };
 
     let live = events
         .into_iter()
@@ -138,6 +151,7 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                 <p class="muted">
                     "Live worker feed below. Scores/drafts poll via Resuma loader_poll while this tab is open. Each ready job gets a tailored pitch + CV bullets."
                 </p>
+                <p class="muted">{apply_banner}</p>
                 <div class="row">
                     <span class="status-pill">
                         <span class={if running { "dot on" } else { "dot" }}></span>
@@ -145,7 +159,8 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                     </span>
                     <span class="muted">
                         {format!(
-                            "queue: {discovered} new · {scoring} in-flight · {ready} ready/manual · {applied} applied · {skipped} skipped"
+                            "queue: {discovered} new · {scoring} in-flight · {ready} ready/manual · {applied} applied · {skipped} skipped · auto-apply={}",
+                            if auto_apply { "on" } else { "off" }
                         )}
                     </span>
                 </div>

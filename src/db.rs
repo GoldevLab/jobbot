@@ -251,6 +251,27 @@ pub async fn insert_profile_suggestion(
     Ok(res.last_insert_rowid())
 }
 
+/// True if same platform+title+body already exists as new/kept/applied (avoid coach spam).
+pub async fn profile_suggestion_duplicate(platform: &str, title: &str, body: &str) -> bool {
+    let body_norm = body.trim();
+    let row: Option<(i64,)> = sqlx::query_as(
+        r#"
+        SELECT id FROM profile_suggestions
+        WHERE platform = ? AND title = ? AND body = ?
+          AND status IN ('new', 'kept', 'applied')
+        LIMIT 1
+        "#,
+    )
+    .bind(platform)
+    .bind(title)
+    .bind(body_norm)
+    .fetch_optional(pool())
+    .await
+    .ok()
+    .flatten();
+    row.is_some()
+}
+
 pub async fn list_profile_suggestions(limit: i64) -> anyhow::Result<Vec<ProfileSuggestion>> {
     let rows = sqlx::query_as::<_, ProfileSuggestion>(
         r#"

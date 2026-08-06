@@ -12,10 +12,11 @@ Facts you can use (only if relevant to THIS job):
 - Postgres block explorer indexer talking to Geth JSON-RPC; Uniswap-V3-style DEX; NFT marketplace on Base; trading bots that resume after restart
 - SQL (Postgres, Turso/libSQL + Drizzle), Express/Node APIs, Docker/Fly.io, CI deploys
 - Author of Resuma (Rust SSR framework) — systems thinking, but day-to-day product backends are Node/TS
-- Physics degree (ULA); English advanced; remote from Venezuela, open to Norway/EU timezone overlap
+- Physics degree (ULA); English advanced; remote from Venezuela, open to roles worldwide (any country / timezone overlap)
 - GitHub GoldevLab; LinkedIn golfredo-perez-fernandez; email golfredo.pf@gmail.com
 
 Never invent employers or bank years. If MongoDB/Rails asked and he lacks depth: say Postgres/SQL + Node is the core, picks up fast.
+Do NOT lock messaging to Norway/EU only — he targets remote jobs globally unless the JD itself is location-specific.
 "#;
 
 pub fn score_prompt(title: &str, company: &str, location: &str, description: &str) -> String {
@@ -87,6 +88,7 @@ Reply with ONLY a compact JSON object (keep strings short; max 3 cv_bullets of ~
 }}
 
 Finish the full JSON. Do not truncate.
+Prefer remote worldwide framing unless the JD is location-specific — do not default to Norway/EU-only.
 "#,
         system = SYSTEM_HUMAN,
         name = settings.full_name,
@@ -126,10 +128,20 @@ pub fn profile_coach_prompt(
     snapshot: &str,
     learning: &str,
 ) -> String {
+    let locations = {
+        let l = settings.locations.trim();
+        if l.is_empty() || l == "*" || l.eq_ignore_ascii_case("all") || l.eq_ignore_ascii_case("worldwide")
+        {
+            "worldwide — any country / remote (NOT Norway-only; do not push Oslo/EU as the default pitch)"
+                .to_string()
+        } else {
+            l.to_string()
+        }
+    };
     format!(
         r#"{system}
 
-You are improving public professional profiles for job search (backend / Web3 / Norway-EU remote).
+You are improving public professional profiles for job search (backend / Web3, remote worldwide).
 Platform to focus on: {platform}
 
 JobBot WILL auto-apply GitHub `actions` (bio + repo topics) via API without asking the user.
@@ -139,7 +151,7 @@ Current settings:
 Name: {name}
 LinkedIn URL: {linkedin}
 GitHub URL: {github}
-Country: {country}
+Country (lives in): {country}
 Target keywords: {keywords}
 Target locations: {locations}
 Notes / pasted profile text (may be empty — LinkedIn About, headline, pinned repos notes):
@@ -168,7 +180,7 @@ Reply with ONLY JSON (no markdown):
     }},
     {{
       "type": "set_topics",
-      "repo": "<exact repo name you own>",
+      "repo": "<exact repo name from the snapshot only>",
       "topics": ["nodejs", "typescript", "web3"]
     }}
   ]
@@ -176,12 +188,13 @@ Reply with ONLY JSON (no markdown):
 
 Rules:
 - 3 to 6 suggestions max. Ready-to-paste copy when possible (bio, About, README blurb).
-- Sound human, not corporate. No emojis. No fake star counts or invented companies.
+- Sound human, not corporate. No emojis. No fake star counts or invented companies/repos.
+- Positioning: remote worldwide from Venezuela. Do NOT default to "Norway/EU only" or "Oslo" unless the user notes demand it. Prefer "remote worldwide" / "open to any timezone overlap".
+- Experience: Node/TS backends since ~2017 (~8 years), Gravitad since 2022. Never invent "3+ years".
 - For github: ONLY GitHub-related suggestion titles (bio, pin order, topics, README). ALWAYS include actions when bio/topics should change. Prefer short bio without email.
-- For github topics: only repos that appear in the snapshot. Max 8 topics per repo.
-- For linkedin: ONLY LinkedIn titles (headline, About, featured). No GitHub bio under linkedin. No actions (LinkedIn cannot auto-apply via API).
-- For general: CV alignment, consistency across profiles; actions empty unless github-related.
-- Prefer concrete Norwegian/EU remote + Web3/backend positioning when relevant.
+- For github topics: ONLY repos that appear in the snapshot (exact names). Never invent repo names like dex-backend. Max 8 topics per repo.
+- For linkedin: ONLY LinkedIn titles (headline, About, featured). No GitHub bio under linkedin. No actions.
+- For general: CV alignment, consistency; actions empty unless github-related and repo is in snapshot.
 - Evolve copy using Memory: if a style was kept, reuse it; if dismissed, do not repeat.
 - Mirror winning apply-agent pitches from Memory when writing About/headline/bio.
 "#,
@@ -192,7 +205,7 @@ Rules:
         github = settings.github,
         country = settings.country,
         keywords = settings.keywords,
-        locations = settings.locations,
+        locations = locations,
         notes = truncate(&settings.profile_notes, 2500),
         snapshot = truncate(snapshot, 4500),
         learning = truncate(if learning.trim().is_empty() {
