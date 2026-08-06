@@ -563,18 +563,15 @@ async fn apply_batch(chrome: &SharedChrome, settings: &Settings, limit: i64) -> 
         return Ok(());
     }
 
-    if let Err(e) = browser::ensure_chrome(chrome).await {
+    let chrome_ok = browser::ensure_chrome(chrome).await.is_ok();
+    if !chrome_ok {
         db::log_event(
             None,
-            "error",
-            format!("Chrome CDP unavailable ({e:#}). Start scripts/chrome-cdp.sh"),
+            "info",
+            "Chrome CDP unavailable — using HTTP apply for Recruitee when possible",
         )
         .await;
-        return Ok(());
     }
-
-    let guard = chrome.lock().await;
-    let session = guard.as_ref().unwrap();
 
     for job in jobs {
         let apply_url = job
@@ -591,7 +588,7 @@ async fn apply_batch(chrome: &SharedChrome, settings: &Settings, limit: i64) -> 
         let ats = sources::apply_common::classify_ats(&apply_url);
         if !ats.auto_apply_supported() {
             let note = format!(
-                "draft ready — {} auto-apply not supported yet; use /jobs/:id",
+                "manual: {} auto-apply not supported yet; use /jobs/:id",
                 ats.as_str()
             );
             db::update_job_status(job.id, "manual", None, None, Some(&note)).await?;
@@ -607,22 +604,73 @@ async fn apply_batch(chrome: &SharedChrome, settings: &Settings, limit: i64) -> 
         )
         .await;
 
-        match sources::apply_with_draft(
-            session,
+        // 1) HTTP path (works on Fly for Recruitee without Chrome).
+        let http_result = sources::apply_http_first(
             &apply_url,
             settings,
             &draft,
             &settings.cv_path,
         )
-        .await
-        {
+        .await;
+
+        let result = match http_result {
+            Some(Ok(res)) => Ok(res),
+            Some(Err(e)) => {
+                // Fall through to Chrome when available.
+                if chrome_ok {
+                    db::log_event(
+                        Some(job.id),
+                        "warn",
+                        format!("HTTP apply failed, trying Chrome: {e:#}"),
+                    )
+                    .await;
+                    let guard = chrome.lock().await;
+                    let session = guard.as_ref().unwrap();
+                    sources::apply_with_draft(
+                        session,
+                        &apply_url,
+                        settings,
+                        &draft,
+                        &settings.cv_path,
+                    )
+                    .await
+                } else {
+                    Err(e)
+                }
+            }
+            None if chrome_ok => {
+                let guard = chrome.lock().await;
+                let session = guard.as_ref().unwrap();
+                sources::apply_with_draft(
+                    session,
+                    &apply_url,
+                    settings,
+                    &draft,
+                    &settings.cv_path,
+                )
+                .await
+            }
+            None => Ok(sources::apply_common::ApplyResult {
+                submitted: false,
+                note: format!(
+                    "manual: {} needs Chrome CDP (not on this host); open /jobs/{}",
+                    ats.as_str(),
+                    job.id
+                ),
+            }),
+        };
+
+        match result {
             Ok(res) => {
                 if res.submitted {
                     db::update_job_status(job.id, "applied", None, None, Some(&res.note))
                         .await?;
                     db::log_event(Some(job.id), "info", format!("applied: {}", res.note)).await;
+                } else if res.note.starts_with("manual:") {
+                    db::update_job_status(job.id, "manual", None, None, Some(&res.note))
+                        .await?;
+                    db::log_event(Some(job.id), "info", res.note).await;
                 } else {
-                    // Unclear confirmation must not look like a successful apply.
                     db::update_job_status(job.id, "failed", None, None, Some(&res.note))
                         .await?;
                     db::log_event(Some(job.id), "warn", format!("apply incomplete: {}", res.note))

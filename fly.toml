@@ -34,8 +34,8 @@ primary_region = 'gru'
   JOBBOT_AUTO_START = '1'
   # Profile coach also runs offline (GitHub auto-apply needs GITHUB_TOKEN secret).
   JOBBOT_PROFILE_AUTO_START = '1'
-  # No Chrome CDP on Fly — discover / score / draft only. Apply locally if needed.
-  JOBBOT_AUTO_APPLY = 'false'
+  # Auto-apply ON via Recruitee HTTP (no Chrome). Video/captcha/Greenhouse→manual or local Chrome.
+  JOBBOT_AUTO_APPLY = 'true'
   JOBBOT_CV_PATH = '/app/cv/CV_Golfredo_Perez_Tether_Backend.pdf'
   JOBBOT_KEYWORDS = 'backend,nodejs,node.js,typescript,web3,blockchain,rust,engineer,developer'
   # Empty / * / all = worldwide (no country filter)

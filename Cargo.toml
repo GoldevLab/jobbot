@@ -20,7 +20,7 @@ serde_json = "1"
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "gzip"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "gzip", "multipart"] }
 scraper = "0.24"
 url = "2"
 uuid = { version = "1", features = ["v4"] }

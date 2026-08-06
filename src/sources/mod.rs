@@ -2,6 +2,7 @@ pub mod apply_common;
 pub mod ashby;
 pub mod greenhouse;
 pub mod recruitee;
+pub mod recruitee_http;
 pub mod web3_career;
 
 use crate::browser::ChromeSession;
@@ -23,7 +24,23 @@ pub struct DiscoveredJob {
     pub description: String,
 }
 
-/// Route to the right ATS applier (Rust/CDP only).
+/// HTTP-first apply (Fly-safe). Returns Some when handled (applied / needs manual / error note).
+/// None means caller should try Chrome CDP.
+pub async fn apply_http_first(
+    apply_url: &str,
+    settings: &Settings,
+    draft: &Value,
+    cv_path: &str,
+) -> Option<Result<ApplyResult>> {
+    match classify_ats(apply_url) {
+        AtsKind::Recruitee => Some(
+            recruitee_http::apply_http(apply_url, settings, draft, cv_path).await,
+        ),
+        _ => None,
+    }
+}
+
+/// Route to the right ATS applier (Chrome CDP).
 pub async fn apply_with_draft(
     chrome: &ChromeSession,
     apply_url: &str,
@@ -43,11 +60,11 @@ pub async fn apply_with_draft(
         }
         AtsKind::Lever => Ok(ApplyResult {
             submitted: false,
-            note: "Lever auto-apply not implemented yet — draft kept for manual".into(),
+            note: "manual: Lever auto-apply not implemented yet".into(),
         }),
         AtsKind::Unknown => Ok(ApplyResult {
             submitted: false,
-            note: "unsupported ATS host — open manually".into(),
+            note: "manual: unsupported ATS host".into(),
         }),
     }
 }

@@ -79,13 +79,13 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
     let skipped = jobs.iter().filter(|j| j.status == "skipped").count();
 
     let apply_banner = if !auto_apply {
-        "Auto-apply is OFF on this host (Fly sets JOBBOT_AUTO_APPLY=false — no Chrome). Discover / score / draft run 24/7; apply locally with Chrome CDP + Auto-apply in Settings, or open each draft and submit by hand."
+        "Auto-apply is OFF. Turn it on in Settings (or JOBBOT_AUTO_APPLY=true). Recruitee can submit over HTTP without Chrome; Greenhouse/Ashby need local Chrome CDP."
             .to_string()
     } else if chrome_hint.is_none() {
-        "Auto-apply is ON but JOBBOT_CHROME_CDP is unset — start ./scripts/chrome-cdp.sh locally. Only Recruitee / Greenhouse / Ashby URLs auto-submit; web3.career links stay ready/manual."
+        "Auto-apply ON (HTTP). Recruitee offers without video/captcha submit from Fly. Jobs that need video (e.g. Tether) or only have a web3.career link stay manual — open draft and paste. Greenhouse/Ashby need local Chrome."
             .to_string()
     } else {
-        "Auto-apply ON — submits Recruitee / Greenhouse / Ashby when a ready job has an ATS URL. Other boards stay ready for manual paste from /jobs/:id."
+        "Auto-apply ON — HTTP Recruitee first, then Chrome for Greenhouse/Ashby. web3.career-only links stay manual."
             .to_string()
     };
 
