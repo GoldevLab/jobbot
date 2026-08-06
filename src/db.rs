@@ -685,19 +685,26 @@ pub async fn update_job_apply_url(id: i64, apply_url: &str) -> anyhow::Result<()
 }
 
 /// Ready drafts whose apply_url is missing or still on web3.career (not an ATS).
+/// Skips recently failed enrich attempts so we do not hammer web3.career (429).
 pub async fn jobs_needing_apply_enrich(limit: i64) -> anyhow::Result<Vec<Job>> {
     let rows = sqlx::query_as::<_, Job>(
         r#"
         SELECT * FROM jobs
-        WHERE status IN ('ready', 'manual', 'ready_draft')
+        WHERE status IN ('ready', 'manual')
+          AND score IS NOT NULL AND score >= 55
           AND (
             apply_url IS NULL
             OR trim(apply_url) = ''
             OR lower(apply_url) LIKE '%web3.career%'
           )
           AND url LIKE '%web3.career%'
+          AND (
+            last_error IS NULL
+            OR last_error NOT LIKE 'enrich:%'
+            OR updated_at < datetime('now', '-6 hours')
+          )
         ORDER BY
-          CASE WHEN score IS NULL THEN 0 ELSE score END DESC,
+          score DESC,
           id ASC
         LIMIT ?
         "#,
@@ -706,6 +713,26 @@ pub async fn jobs_needing_apply_enrich(limit: i64) -> anyhow::Result<Vec<Job>> {
     .fetch_all(pool())
     .await?;
     Ok(rows)
+}
+
+pub async fn touch_job_enrich_note(id: i64, note: &str) -> anyhow::Result<()> {
+    if note.is_empty() {
+        sqlx::query(
+            "UPDATE jobs SET last_error = NULL, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(id)
+        .execute(pool())
+        .await?;
+    } else {
+        sqlx::query(
+            "UPDATE jobs SET last_error = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(note)
+        .bind(id)
+        .execute(pool())
+        .await?;
+    }
+    Ok(())
 }
 
 pub async fn get_job(id: i64) -> anyhow::Result<Option<Job>> {
