@@ -6,6 +6,7 @@ data/
 local.db
 .env
 *.pdf
+!cv/*.pdf
 /tmp/
 data/drafts/
 .fly-context/

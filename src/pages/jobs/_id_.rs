@@ -24,6 +24,15 @@ pub fn page(_req: FlowRequest) -> View {
     )
 }
 
+fn draft_field(draft: &serde_json::Value, key: &str) -> String {
+    draft
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
 fn render_job(j: Job) -> View {
     let draft: serde_json::Value = j
         .draft_json
@@ -31,21 +40,15 @@ fn render_job(j: Job) -> View {
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(serde_json::json!({}));
 
-    let pitch = draft
-        .get("pitch")
-        .and_then(|v| v.as_str())
-        .unwrap_or("(no pitch yet — wait for drafting)")
-        .to_string();
-    let why = draft
-        .get("why_company")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let cover = draft
-        .get("cover_note")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let pitch = draft_field(&draft, "pitch");
+    let why = draft_field(&draft, "why_company");
+    let cover = draft_field(&draft, "cover_note");
+    let node = draft_field(&draft, "node_experience");
+    let databases = draft_field(&draft, "databases");
+    let compliance = draft_field(&draft, "compliance_finance");
+    let p2p = draft_field(&draft, "p2p");
+    let salary = draft_field(&draft, "salary_usd");
+    let country = draft_field(&draft, "country");
     let emphasize = draft
         .get("emphasize")
         .and_then(|v| v.as_array())
@@ -72,19 +75,48 @@ fn render_job(j: Job) -> View {
         .score
         .map(|x| format!("{x:.0}"))
         .unwrap_or_else(|| "—".into());
-    let file_hint = format!("data/drafts/{}.md", j.id);
+    let packet_href = format!("/jobs/{}/packet.txt", j.id);
+    let cv_href = format!("/jobs/{}/cv.pdf", j.id);
+    let is_manual = matches!(j.status.as_str(), "manual" | "ready" | "failed");
+    let err = j.last_error.clone().unwrap_or_default();
 
     view! {
         <div class="card">
             <a class="btn btn-ghost" href="/">"← Queue"</a>
             <h1>{j.title.clone()}</h1>
             <p class="muted">{format!("{} — {} · status {} · score {}", j.company, j.location, j.status, score)}</p>
-            <div class="row">
-                <a class="btn btn-primary" href={url} target="_blank" rel="noreferrer">"Open apply page"</a>
-            </div>
+
+            {if is_manual {
+                view! {
+                    <div class="card" style="margin:1rem 0;background:rgba(0,0,0,0.04)">
+                        <h2 style="margin-top:0">"Manual apply kit"</h2>
+                        <p class="muted">
+                            "Bot cannot auto-submit this one. Download the CV PDF + paste kit, then open the apply page."
+                        </p>
+                        <div class="row">
+                            <a class="btn btn-primary" href={cv_href.clone()} download="cv.pdf">"Download CV (PDF)"</a>
+                            <a class="btn" href={packet_href.clone()} download="packet.txt">"Download paste kit (.txt)"</a>
+                            <a class="btn btn-ghost" href={url.clone()} target="_blank" rel="noreferrer">"Open apply page"</a>
+                        </div>
+                        {if !err.is_empty() {
+                            view! { <p class="muted">{format!("Note: {err}")}</p> }
+                        } else {
+                            View::empty()
+                        }}
+                    </div>
+                }
+            } else {
+                view! {
+                    <div class="row">
+                        <a class="btn btn-primary" href={url.clone()} target="_blank" rel="noreferrer">"Open apply page"</a>
+                        <a class="btn" href={packet_href.clone()} download="packet.txt">"Paste kit"</a>
+                        <a class="btn btn-ghost" href={cv_href.clone()} download="cv.pdf">"CV PDF"</a>
+                    </div>
+                }
+            }}
 
             <h2>"Pitch (tailored)"</h2>
-            <p>{pitch}</p>
+            <pre class="log">{if pitch.is_empty() { "Still drafting…".into() } else { pitch }}</pre>
 
             <h2>"Emphasize"</h2>
             <p class="muted">{if emphasize.is_empty() { "—".into() } else { emphasize }}</p>
@@ -93,7 +125,7 @@ fn render_job(j: Job) -> View {
             <pre class="log">{if bullets.is_empty() { "Still drafting…".into() } else { bullets }}</pre>
 
             <h2>"Why this company"</h2>
-            <p>{if why.is_empty() { "—".into() } else { why }}</p>
+            <pre class="log">{if why.is_empty() { "—".into() } else { why }}</pre>
 
             {if !cover.is_empty() {
                 view! {
@@ -106,7 +138,23 @@ fn render_job(j: Job) -> View {
                 View::empty()
             }}
 
-            <p class="muted">{format!("Also saved on disk: {file_hint}")}</p>
+            <h2>"Screening answers (paste)"</h2>
+            <pre class="log">{format!(
+                "Node experience: {}\nDatabases: {}\nCompliance/finance: {}\nP2P: {}\nCountry: {}\nSalary USD: {}",
+                if node.is_empty() { "—" } else { &node },
+                if databases.is_empty() { "—" } else { &databases },
+                if compliance.is_empty() { "—" } else { &compliance },
+                if p2p.is_empty() { "—" } else { &p2p },
+                if country.is_empty() { "—" } else { &country },
+                if salary.is_empty() { "—" } else { &salary },
+            )}</pre>
+
+            <p class="muted">
+                {format!(
+                    "Files: {} · {}",
+                    packet_href, cv_href
+                )}
+            </p>
         </div>
     }
 }

@@ -4,12 +4,17 @@ mod agent;
 mod browser;
 mod db;
 mod github;
+mod packet;
 mod pages;
 mod profile_worker;
 mod sources;
 mod style;
 mod worker;
 
+use axum::extract::Path;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use pages::PagesRegistry;
 use resuma::prelude::*;
 use serde::Deserialize;
@@ -351,8 +356,76 @@ async fn main() -> std::io::Result<()> {
         .not_found(|| not_found_page())
         .with_public_dir(public_dir)
         .auto_pages(pages_dir, PagesRegistry)
+        .route("/jobs/{id}/packet.txt", get(download_packet_txt))
+        .route("/jobs/{id}/cv.pdf", get(download_cv_pdf))
         .serve(FlowServeOptions::from_env())
         .await
+}
+
+async fn download_packet_txt(Path(id): Path<i64>) -> Response {
+    let Ok(Some(job)) = db::get_job(id).await else {
+        return (StatusCode::NOT_FOUND, "job not found").into_response();
+    };
+    let Ok(settings) = db::get_settings().await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "settings error").into_response();
+    };
+    let draft: serde_json::Value = job
+        .draft_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::json!({}));
+    let text = packet::build_packet_text(&job, &settings, &draft);
+    let _ = packet::save_packet_file(job.id, &text);
+    let filename = packet::safe_filename(&job.title, &job.company, "txt");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")) {
+        headers.insert(header::CONTENT_DISPOSITION, v);
+    }
+    (headers, text).into_response()
+}
+
+async fn download_cv_pdf(Path(id): Path<i64>) -> Response {
+    let Ok(Some(job)) = db::get_job(id).await else {
+        return (StatusCode::NOT_FOUND, "job not found").into_response();
+    };
+    let Ok(settings) = db::get_settings().await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "settings error").into_response();
+    };
+    let path = std::path::Path::new(&settings.cv_path);
+    if !path.is_file() {
+        return (
+            StatusCode::NOT_FOUND,
+            format!(
+                "CV not found at {}. Place the PDF on the server (JOBBOT_CV_PATH) or Settings → CV path.",
+                settings.cv_path
+            ),
+        )
+            .into_response();
+    }
+    let Ok(bytes) = tokio::fs::read(path).await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "could not read CV").into_response();
+    };
+    let filename = packet::safe_filename(&job.title, &job.company, "pdf");
+    // Prefer original CV basename when it looks like a pdf.
+    let filename = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| s.to_ascii_lowercase().ends_with(".pdf"))
+        .map(|s| s.to_string())
+        .unwrap_or(filename);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/pdf"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")) {
+        headers.insert(header::CONTENT_DISPOSITION, v);
+    }
+    (headers, bytes).into_response()
 }
 
 async fn run_smoke() -> anyhow::Result<()> {

@@ -82,10 +82,10 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
         "Auto-apply is OFF. Turn it on in Settings (or JOBBOT_AUTO_APPLY=true). Recruitee can submit over HTTP without Chrome; Greenhouse/Ashby need local Chrome CDP."
             .to_string()
     } else if chrome_hint.is_none() {
-        "Auto-apply ON (HTTP). Recruitee offers without video/captcha submit from Fly. Jobs that need video (e.g. Tether) or only have a web3.career link stay manual — open draft and paste. Greenhouse/Ashby need local Chrome."
+        "Auto-apply ON (HTTP). Recruitee without video/captcha submits from Fly. Manual jobs: open draft → Download CV PDF + paste kit, then apply by hand."
             .to_string()
     } else {
-        "Auto-apply ON — HTTP Recruitee first, then Chrome for Greenhouse/Ashby. web3.career-only links stay manual."
+        "Auto-apply ON — HTTP Recruitee first, then Chrome. Manual jobs have CV + paste kit on the draft page."
             .to_string()
     };
 
@@ -145,7 +145,11 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                     </td>
                     <td>{score}</td>
                     <td class="row-actions">
-                        <a href={detail}>"draft"</a>
+                        <a href={detail.clone()}>"draft"</a>
+                        {" · "}
+                        <a href={format!("/jobs/{}/packet.txt", j.id)}>"kit"</a>
+                        {" · "}
+                        <a href={format!("/jobs/{}/cv.pdf", j.id)}>"cv"</a>
                         {" · "}
                         <a href={url} target="_blank" rel="noreferrer">"open"</a>
                     </td>

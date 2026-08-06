@@ -309,8 +309,12 @@ async fn draft_batch(agent: &LlmAgent, settings: &Settings, limit: i64) -> Resul
         match agent.complete_json(&prompt).await {
             Ok(v) => {
                 let s = serde_json::to_string_pretty(&v)?;
-                // Persist a human-readable snippet next to DB draft
+                // Persist a human-readable snippet + manual paste kit next to DB draft
                 let _ = save_draft_file(job.id, &job.title, &job.company, &v);
+                if let Ok(settings) = db::get_settings().await {
+                    let kit = crate::packet::build_packet_text(&job, &settings, &v);
+                    let _ = crate::packet::save_packet_file(job.id, &kit);
+                }
                 db::update_job_status(job.id, "ready", None, Some(&s), None).await?;
                 let pitch = v
                     .get("pitch")
@@ -368,6 +372,8 @@ async fn draft_batch(agent: &LlmAgent, settings: &Settings, limit: i64) -> Resul
                 });
                 let s = serde_json::to_string_pretty(&fallback)?;
                 let _ = save_draft_file(job.id, &job.title, &job.company, &fallback);
+                let kit = crate::packet::build_packet_text(&job, settings, &fallback);
+                let _ = crate::packet::save_packet_file(job.id, &kit);
                 db::update_job_status(
                     job.id,
                     "ready",
