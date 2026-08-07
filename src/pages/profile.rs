@@ -89,7 +89,7 @@ fn render_profile(
             <div class="card">
                 <h1>"Profile coach"</h1>
                 <p class="muted">
-                    "Connected to the apply queue: drafts teach the coach, kept bios/headlines shape new pitches. Offline: both workers auto-start on Fly. Topics auto-push with GITHUB_TOKEN. Bio needs classic PAT scope `user` — until then bio is saved into Profile notes (paste once on GitHub). LinkedIn About/headline also land in notes. Positioning: remote worldwide."
+                    "Connected to the apply queue: drafts teach the coach, kept bios/headlines shape new pitches. Offline: both workers auto-start on Fly. With GITHUB_TOKEN (scopes repo + user), bio and topics auto-push. LinkedIn About/headline land in Profile notes. Positioning: remote worldwide."
                 </p>
                 <div class="row">
                     <span class="status-pill">
@@ -117,6 +117,12 @@ fn render_profile(
                     <Form submit={crate::analyze_profiles_now}>
                         <button class="btn" type="submit">"Analyze now"</button>
                     </Form>
+                    <Form submit={crate::apply_all_profile_suggestions}>
+                        <button class="btn btn-primary" type="submit">"Apply all pending"</button>
+                    </Form>
+                    <Form submit={crate::dismiss_all_profile_suggestions}>
+                        <button class="btn btn-ghost" type="submit">"Dismiss all"</button>
+                    </Form>
                     <a class="btn btn-ghost" href="/settings">"Settings / notes"</a>
                     <a class="btn btn-ghost" href="/">"Queue"</a>
                 </div>
@@ -128,10 +134,10 @@ fn render_profile(
             </div>
 
             <div>
-                <h2 style="margin:1rem 0 0.25rem">"Suggestions"</h2>
-                <p class="muted">"GitHub changes may already be live (status: applied). LinkedIn: paste manually. Keep = prefer this style next time; Dismiss = avoid."</p>
+                <h2 style="margin:1rem 0 0.25rem">"Open suggestions"</h2>
+                <p class="muted">"Only open items appear here. Apply all pending pushes GitHub bio/topics (skips Norway copy), saves LinkedIn into notes, and clears the rest so the coach can continue. Keep = prefer this style; Dismiss = avoid."</p>
                 {if cards.is_empty() {
-                    view! { <div class="card muted">"No suggestions yet."</div> }
+                    view! { <div class="card muted">"Queue clear — coach can analyze again."</div> }
                 } else {
                     view! { <div>{cards}</div> }
                 }}

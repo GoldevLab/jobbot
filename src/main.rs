@@ -159,6 +159,41 @@ async fn analyze_profiles_now(
 }
 
 #[submit]
+async fn apply_all_profile_suggestions(
+    _form: serde_json::Value,
+    _req: &FlowRequest,
+) -> std::result::Result<Redirect, SubmitError> {
+    tokio::spawn(async {
+        match profile_worker::apply_all_open_suggestions().await {
+            Ok((a, k, d)) => {
+                db::log_profile_event(
+                    "info",
+                    format!("apply-all finished: applied={a} notes={k} cleared={d}"),
+                )
+                .await;
+            }
+            Err(e) => {
+                db::log_profile_event("error", format!("apply-all: {e:#}")).await;
+            }
+        }
+    });
+    db::log_profile_event("info", "apply-all queued").await;
+    Ok(Redirect::to("/profile"))
+}
+
+#[submit]
+async fn dismiss_all_profile_suggestions(
+    _form: serde_json::Value,
+    _req: &FlowRequest,
+) -> std::result::Result<Redirect, SubmitError> {
+    let n = db::dismiss_all_open_profile_suggestions()
+        .await
+        .map_err(|_| SubmitError::new("Could not dismiss suggestions"))?;
+    db::log_profile_event("info", format!("dismissed all open suggestions ({n})")).await;
+    Ok(Redirect::to("/profile"))
+}
+
+#[submit]
 async fn mark_job_applied(
     form: IdForm,
     _req: &FlowRequest,

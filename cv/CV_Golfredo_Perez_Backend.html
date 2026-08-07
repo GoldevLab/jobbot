@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Golfredo Pérez Fernández — Senior Backend Engineer</title>
+  <style>
+    @page { size: A4; margin: 12mm 14mm; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "IBM Plex Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      font-size: 9.6pt;
+      line-height: 1.32;
+      color: #1c1c1c;
+      margin: 0;
+      padding: 0;
+      max-width: 210mm;
+    }
+    h1 {
+      font-size: 16.5pt;
+      letter-spacing: 0.02em;
+      margin: 0 0 2px;
+      font-weight: 700;
+    }
+    .role {
+      font-size: 10.5pt;
+      font-weight: 600;
+      color: #1a4d3e;
+      margin: 0 0 6px;
+    }
+    .contact {
+      font-size: 8.6pt;
+      color: #333;
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+    .contact a { color: #1a4d3e; text-decoration: none; }
+    h2 {
+      font-size: 9.5pt;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      border-bottom: 1.5px solid #1a4d3e;
+      color: #1a4d3e;
+      margin: 10px 0 5px;
+      padding-bottom: 1px;
+    }
+    p { margin: 0 0 5px; }
+    ul { margin: 2px 0 6px; padding-left: 15px; }
+    li { margin-bottom: 2.5px; }
+    .job-title { font-weight: 700; margin-top: 7px; margin-bottom: 0; }
+    .meta { font-size: 8.6pt; color: #444; margin: 0 0 3px; }
+    .skill-line { margin: 0 0 2.5px; }
+    .skill-line strong { color: #111; }
+    a { color: #1a4d3e; text-decoration: none; }
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2px 18px;
+    }
+    .hint {
+      margin-top: 8px;
+      font-size: 7.8pt;
+      color: #666;
+      border-top: 1px solid #ddd;
+      padding-top: 5px;
+    }
+    @media print {
+      body { font-size: 9.4pt; }
+      a { color: inherit; }
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Golfredo Pérez Fernández</h1>
+  <p class="role">Senior Backend Engineer · Node.js / TypeScript · Blockchain platforms</p>
+  <p class="contact">
+    Venezuela · Remote worldwide (open to any timezone overlap)<br />
+    +58 416 210 9369 · <a href="mailto:golfredo.pf@gmail.com">golfredo.pf@gmail.com</a><br />
+    GitHub: <a href="https://github.com/GoldevLab">github.com/GoldevLab</a> ·
+    LinkedIn: <a href="https://linkedin.com/in/golfredo-perez-fernandez">linkedin.com/in/golfredo-perez-fernandez</a>
+  </p>
+
+  <h2>Summary</h2>
+  <p>
+    Backend-leaning engineer with continuous product work in JavaScript/TypeScript since 2017.
+    I design and ship the server side of multi-service platforms: Node APIs (Express), SQL schemas,
+    indexers that talk to chain RPC, wallet-aware flows, and ops on Fly.io/Docker.
+    Most relevant recent work is a Web3 stack on Base plus a private EVM chain — marketplace,
+    DEX, token/DeFi panel, trading bots, and a Postgres-backed block explorer.
+    Comfortable owning ambiguous requirements end to end and keeping services secure and online.
+  </p>
+
+  <h2>Skills</h2>
+  <p class="skill-line"><strong>Runtime:</strong> Node.js, TypeScript, JavaScript · Express · server routes / SSR adapters · JSON APIs</p>
+  <p class="skill-line"><strong>Architecture:</strong> multi-app platforms, service boundaries, RPC clients (HTTP JSON-RPC to Geth/EVM), webhooks, background jobs, retries</p>
+  <p class="skill-line"><strong>Data:</strong> PostgreSQL (indexer schemas, migrations, pagination), SQL, Turso/libSQL, Drizzle ORM · relational modeling for product + on-chain sync</p>
+  <p class="skill-line"><strong>Blockchain:</strong> EVM (Base + custom Clique PoA), viem, wallet auth, token/NFT/DEX flows, indexer lag/health, on-chain ↔ off-chain sync</p>
+  <p class="skill-line"><strong>Security &amp; reliability:</strong> auth/session boundaries, secret handling, input validation, least-privilege deploy secrets, Docker/Fly volumes, restart-safe workers</p>
+  <p class="skill-line"><strong>Also:</strong> Redis (usage in tooling/caches where needed) · Rust (Resuma SSR framework, SQL-backed apps) · Qwik City · Linux · GitHub Actions</p>
+
+  <h2>Experience</h2>
+
+  <p class="job-title">Backend &amp; Web3 Engineer</p>
+  <p class="meta">Gravitad (project accelerator, Spain) · Remote · 2022 – Present</p>
+  <ul>
+    <li>Own backend and data paths for the Koolinart / Orionchain platform: several Node/TypeScript services that share contracts, wallets, and SQL stores.</li>
+    <li>Built a production block explorer indexer against Geth JSON-RPC — Postgres schema, sync loop, paginated tx/address queries, lag/health checks, SSE live feed.</li>
+    <li>Implemented server-side trading bots (20 wallets per bot, randomized swaps) that persist state and self-resume after deploys/crashes.</li>
+    <li>Wire marketplace / DEX / token panel backends to Base and Orionchain RPCs; keep off-chain indexes consistent with on-chain events.</li>
+    <li>Work with product and frontend on practical API shapes; ship behind Docker + Fly.io with CI deploy gates (build, lint, format).</li>
+  </ul>
+
+  <p class="job-title">Independent Software Engineer</p>
+  <p class="meta">Own products &amp; client systems · Remote · 2017 – Present</p>
+  <ul>
+    <li>Shipped production Node/TypeScript backends for education (MOA), ops tools (Iriparo service orders), crypto dashboards (Crypto Helper: sync jobs, Drizzle/Turso, alerts), and DeFi utilities (Save TimeLock).</li>
+    <li>Designed schemas and query paths for attendance, reporting, role-based dashboards, order tracking, and market data — including PDF/QR flows and third-party API integrations.</li>
+    <li>Operated full lifecycle: requirements → service design → implementation → deploy → debugging production issues across API, DB, and infra.</li>
+    <li>Author of <a href="https://github.com/GoldevLab/resuma">Resuma</a> (Rust SSR framework on crates.io) — systems work that informs how I think about server boundaries, RPC-style server actions, and low-overhead backends.</li>
+  </ul>
+
+  <h2>Selected systems (live / production)</h2>
+  <div class="two-col">
+    <ul>
+      <li><strong>Block explorer + Postgres indexer</strong> — <a href="https://koolinart-block-explorer.fly.dev">koolinart-block-explorer.fly.dev</a></li>
+      <li><strong>Private EVM (Geth Clique, 2-node)</strong> — Fly-hosted RPC for Orionchain</li>
+      <li><strong>DEX (Uniswap V3-style)</strong> — <a href="https://koolinart-dex.fly.dev">koolinart-dex.fly.dev</a></li>
+      <li><strong>Volume bots (Node workers)</strong> — Orionchain + Base</li>
+    </ul>
+    <ul>
+      <li><strong>NFT marketplace (Base)</strong> — <a href="https://koolinart.fly.dev">koolinart.fly.dev</a></li>
+      <li><strong>Token / DeFi hub</strong> — <a href="https://koolinart-token.fly.dev">koolinart-token.fly.dev</a></li>
+      <li><strong>Crypto Helper</strong> — market sync + DB-backed modules</li>
+      <li><strong>MOA Education</strong> — <a href="https://moaeducation.com">moaeducation.com</a></li>
+    </ul>
+  </div>
+
+  <h2>Education &amp; languages</h2>
+  <p><strong>Universidad de Los Andes (ULA)</strong> — Licenciado en Física (Bachelor’s in Physics). Used to hard problems, modeling, and careful debugging.</p>
+  <p><strong>Languages:</strong> Spanish (native) · English (advanced — daily for docs, code, APIs, remote collaboration).</p>
+
+  <p class="hint">
+    Targeting Senior Backend Developer roles with Node.js, SQL, RPC between services, and blockchain-adjacent platforms.
+    Open to remote worldwide from Venezuela — flexible timezone overlap.
+  </p>
+
+</body>
+</html>

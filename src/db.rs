@@ -375,14 +375,13 @@ pub async fn count_open_profile_suggestions() -> i64 {
 }
 
 pub async fn list_profile_suggestions(limit: i64) -> anyhow::Result<Vec<ProfileSuggestion>> {
-    // Prefer actionable copy; hide overview noise from the default feed.
+    // Only open (`new`) cards — Keep/Dismiss/Apply must clear them from the UI.
     let rows = sqlx::query_as::<_, ProfileSuggestion>(
         r#"
         SELECT * FROM profile_suggestions
-        WHERE status != 'dismissed'
+        WHERE status = 'new'
           AND lower(title) NOT LIKE '%overview%'
-        ORDER BY CASE status WHEN 'new' THEN 0 WHEN 'kept' THEN 1 ELSE 2 END,
-                 priority ASC, id DESC
+        ORDER BY priority ASC, id DESC
         LIMIT ?
         "#,
     )
@@ -390,6 +389,20 @@ pub async fn list_profile_suggestions(limit: i64) -> anyhow::Result<Vec<ProfileS
     .fetch_all(pool())
     .await?;
     Ok(rows)
+}
+
+/// Dismiss every open suggestion (clears the coach idle gate).
+pub async fn dismiss_all_open_profile_suggestions() -> anyhow::Result<u64> {
+    let res = sqlx::query(
+        r#"
+        UPDATE profile_suggestions
+        SET status = 'dismissed', updated_at = datetime('now')
+        WHERE status = 'new'
+        "#,
+    )
+    .execute(pool())
+    .await?;
+    Ok(res.rows_affected())
 }
 
 pub async fn set_profile_suggestion_status(id: i64, status: &str) -> anyhow::Result<()> {

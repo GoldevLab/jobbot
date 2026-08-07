@@ -131,6 +131,136 @@ pub async fn run_analyze_now() -> Result<()> {
     Ok(())
 }
 
+fn stale_geo_pitch(text: &str) -> bool {
+    let l = text.to_ascii_lowercase();
+    l.contains("norway")
+        || l.contains("oslo")
+        || (l.contains("eu") && l.contains("overlap") && !l.contains("worldwide"))
+}
+
+/// Apply every open (`new`) suggestion we can push, clear the rest so coach unblocks.
+pub async fn apply_all_open_suggestions() -> Result<(u64, u64, u64)> {
+    let settings = db::get_settings().await?;
+    let mut notes = settings.profile_notes.clone();
+    let owner = github_login(&settings.github).unwrap_or_else(|| "GoldevLab".into());
+    let allowed = crate::github::list_owner_repos(&owner)
+        .await
+        .unwrap_or_default();
+
+    let open = db::list_profile_suggestions(200).await?;
+    let mut applied = 0u64;
+    let mut dismissed = 0u64;
+    let mut kept = 0u64;
+
+    db::log_profile_event(
+        "info",
+        format!("apply-all: processing {} open suggestion(s)", open.len()),
+    )
+    .await;
+
+    for sug in open {
+        let title_l = sug.title.to_ascii_lowercase();
+        let body = sug.body.trim();
+
+        // Never push Norway/EU-only bios after worldwide repositioning.
+        if sug.platform == "github" && title_l.contains("bio") && stale_geo_pitch(body) {
+            let _ = db::insert_profile_lesson(
+                "dismiss",
+                &sug.platform,
+                &sug.title,
+                body,
+                -1.5,
+            )
+            .await;
+            let _ = db::set_profile_suggestion_status(sug.id, "dismissed").await;
+            dismissed += 1;
+            db::log_profile_event(
+                "info",
+                format!("apply-all: dismissed stale geo bio — {}", sug.title),
+            )
+            .await;
+            continue;
+        }
+
+        if sug.platform == "github"
+            && (title_l.contains("bio") || title_l.contains("topic"))
+            && crate::github::token_from_env().is_some()
+        {
+            match crate::github::apply_from_suggestion(&owner, &sug.title, body, &allowed).await {
+                Some(msg) if msg.contains("auto-applied") || msg.starts_with("applied") => {
+                    let _ = db::insert_profile_lesson(
+                        "keep",
+                        &sug.platform,
+                        &sug.title,
+                        body,
+                        1.5,
+                    )
+                    .await;
+                    let _ = db::set_profile_suggestion_status(sug.id, "applied").await;
+                    applied += 1;
+                    db::log_profile_event("info", format!("apply-all: {msg}")).await;
+                    continue;
+                }
+                Some(msg) => {
+                    db::log_profile_event("warn", format!("apply-all: {msg}")).await;
+                }
+                None => {}
+            }
+        }
+
+        if sug.platform == "linkedin"
+            && (title_l.contains("about") || title_l.contains("headline"))
+        {
+            let label = if title_l.contains("headline") {
+                "Headline"
+            } else {
+                "About"
+            };
+            let block = format!("{label}:\n{body}");
+            if !notes.contains(body) {
+                if !notes.is_empty() {
+                    notes.push_str("\n\n");
+                }
+                notes.push_str(&block);
+                let _ = sqlx::query(
+                    "UPDATE settings SET profile_notes = ?, updated_at = datetime('now') WHERE id = 1",
+                )
+                .bind(&notes)
+                .execute(db::pool())
+                .await;
+            }
+            let _ = db::insert_profile_lesson("keep", &sug.platform, &sug.title, body, 1.2).await;
+            let _ = db::set_profile_suggestion_status(sug.id, "kept").await;
+            kept += 1;
+            db::log_profile_event(
+                "info",
+                format!("apply-all: saved LinkedIn {label} into Profile notes"),
+            )
+            .await;
+            continue;
+        }
+
+        // Manual-only / invented / non-API items — clear the gate.
+        let _ = db::set_profile_suggestion_status(sug.id, "dismissed").await;
+        dismissed += 1;
+        db::log_profile_event(
+            "info",
+            format!(
+                "apply-all: cleared (not auto-applicable) — {} · {}",
+                sug.platform, sug.title
+            ),
+        )
+        .await;
+    }
+
+    db::log_profile_event(
+        "info",
+        format!("apply-all done: applied={applied} notes={kept} cleared={dismissed}"),
+    )
+    .await;
+    Ok((applied, kept, dismissed))
+}
+
 async fn coach_platform(platform: &str, settings: &Settings) -> Result<usize> {
     let snapshot = match platform {
         "github" => fetch_github_snapshot(&settings.github).await.unwrap_or_else(|e| {
