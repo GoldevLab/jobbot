@@ -28,10 +28,13 @@ pub fn spawn(chrome: SharedChrome) -> WorkerHandle {
 
 async fn run_loop(stop: Arc<AtomicBool>, chrome: SharedChrome) -> Result<()> {
     db::log_event(None, "info", "worker started").await;
+    let _ = scrub_stale_geo_drafts().await;
     let mut tick: u64 = 0;
     let mut last_discover = std::time::Instant::now()
         .checked_sub(Duration::from_secs(3600))
         .unwrap_or_else(std::time::Instant::now);
+    // After a sterile discover, wait longer before scraping again (seconds).
+    let mut discover_idle_secs: u64 = 30 * 60;
     while !stop.load(Ordering::Relaxed) {
         let settings = match db::get_settings().await {
             Ok(s) => s,
@@ -78,12 +81,18 @@ async fn run_loop(stop: Arc<AtomicBool>, chrome: SharedChrome) -> Result<()> {
                 .map(|v| !v.is_empty())
                 .unwrap_or(false);
 
-        // Idle queue: scrape at most every 30 min. With backlog: every ~20 ticks.
-        let due_idle = last_discover.elapsed() >= Duration::from_secs(30 * 60);
+        // Idle: 30m normally, 2h after sterile refresh. With backlog: every ~20 ticks.
+        let due_idle = last_discover.elapsed() >= Duration::from_secs(discover_idle_secs);
         let due_busy = backlog && (tick == 1 || tick % 20 == 0);
         if tick == 1 || due_busy || (!backlog && due_idle) {
-            if let Err(e) = discover_once(&settings).await {
-                db::log_event(None, "warn", format!("discover: {e:#}")).await;
+            match discover_once(&settings).await {
+                Ok(newly) => {
+                    discover_idle_secs = if newly == 0 { 2 * 3600 } else { 30 * 60 };
+                }
+                Err(e) => {
+                    db::log_event(None, "warn", format!("discover: {e:#}")).await;
+                    discover_idle_secs = 60 * 60;
+                }
             }
             last_discover = std::time::Instant::now();
         }
@@ -129,10 +138,23 @@ async fn run_loop(stop: Arc<AtomicBool>, chrome: SharedChrome) -> Result<()> {
     Ok(())
 }
 
-async fn discover_once(settings: &Settings) -> Result<()> {
+/// Returns count of newly inserted jobs.
+async fn discover_once(settings: &Settings) -> Result<u64> {
     db::log_event(None, "info", "discovering web3.career…").await;
-    let mut jobs = web3_career::discover(&settings.keywords, &settings.locations).await?;
+    let known = db::existing_external_ids("web3.career")
+        .await
+        .unwrap_or_default();
+    let mut jobs = web3_career::discover_skipping_known(
+        &settings.keywords,
+        &settings.locations,
+        &known,
+    )
+    .await?;
     jobs.insert(0, web3_career::seed_tether_norway());
+    let unknown_detail = jobs
+        .iter()
+        .filter(|j| j.source == "web3.career" && !known.contains(&j.external_id))
+        .count();
     let rows: Vec<_> = jobs
         .into_iter()
         .map(|j| {
@@ -153,14 +175,16 @@ async fn discover_once(settings: &Settings) -> Result<()> {
         db::log_event(
             None,
             "info",
-            format!("discovered {newly} new jobs ({touched} seen)"),
+            format!("discovered {newly} new jobs ({touched} seen, {unknown_detail} detail-scraped)"),
         )
         .await;
     } else {
         db::log_event(
             None,
             "info",
-            format!("discover refresh: 0 new ({touched} already in queue)"),
+            format!(
+                "discover refresh: 0 new ({touched} already in queue; skipped detail scrape — next idle in ~2h)"
+            ),
         )
         .await;
     }
@@ -169,6 +193,48 @@ async fn discover_once(settings: &Settings) -> Result<()> {
             None,
             "warn",
             "only seed job found — web3.career scrape may have returned nothing",
+        )
+        .await;
+    }
+    Ok(newly as u64)
+}
+
+/// One-shot: rewrite Norway/EU leftover in stored drafts (non-Norway JDs).
+async fn scrub_stale_geo_drafts() -> Result<()> {
+    let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT id, title, location, draft_json FROM jobs
+        WHERE draft_json IS NOT NULL
+          AND status IN ('ready', 'manual', 'applied', 'ready_draft')
+        "#,
+    )
+    .fetch_all(db::pool())
+    .await?;
+    let mut n = 0u64;
+    for (id, title, location, draft_json) in rows {
+        let Some(raw) = draft_json else { continue };
+        let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        let before = v.clone();
+        style::scrub_draft_geo(&mut v, &location, "", &title);
+        if v != before {
+            let s = serde_json::to_string_pretty(&v)?;
+            sqlx::query(
+                "UPDATE jobs SET draft_json = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(&s)
+            .bind(id)
+            .execute(db::pool())
+            .await?;
+            n += 1;
+        }
+    }
+    if n > 0 {
+        db::log_event(
+            None,
+            "info",
+            format!("scrubbed Norway/EU leftover from {n} draft(s)"),
         )
         .await;
     }
@@ -185,14 +251,37 @@ fn quick_skip(title: &str, company: &str) -> Option<&'static str> {
         "fp&a",
         "compliance executive",
         "financial crime",
+        "compliance associate",
+        "compliance manager",
+        "compliance specialist",
         "supply chain",
         "network engineer",
         "product support",
+        "technical support",
         "talent program",
         "graduate junior",
         "site reliability",
         " sre ",
         "production engineer",
+        "sales manager",
+        "sales lead",
+        "business development",
+        "account management",
+        "program manager",
+        "product manager",
+        "marketing",
+        "brand kol",
+        " counsel",
+        "legal intern",
+        "risk analyst",
+        "credit risk",
+        "quantitative researcher",
+        "data scientist",
+        "creative strategist",
+        "client engagement",
+        "supply specialist",
+        "functional consultant",
+        "field training",
     ];
     for j in junk {
         if hay.contains(j) {
@@ -307,7 +396,13 @@ async fn draft_batch(agent: &LlmAgent, settings: &Settings, limit: i64) -> Resul
             &memory,
         );
         match agent.complete_json(&prompt).await {
-            Ok(v) => {
+            Ok(mut v) => {
+                style::scrub_draft_geo(
+                    &mut v,
+                    &job.location,
+                    &job.description,
+                    &job.title,
+                );
                 let s = serde_json::to_string_pretty(&v)?;
                 // Persist a human-readable snippet + manual paste kit next to DB draft
                 let _ = save_draft_file(job.id, &job.title, &job.company, &v);
@@ -721,5 +816,6 @@ async fn jobs_ready_for_apply(limit: i64) -> anyhow::Result<Vec<db::Job>> {
 /// One-shot discover from UI without waiting for loop.
 pub async fn run_discover_now() -> Result<()> {
     let settings = db::get_settings().await?;
-    discover_once(&settings).await
+    discover_once(&settings).await?;
+    Ok(())
 }

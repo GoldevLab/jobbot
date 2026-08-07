@@ -121,6 +121,65 @@ pub fn truncate(s: &str, max: usize) -> String {
     t
 }
 
+/// Norway/EU-only framing left over from earlier positioning (unless JD is Norway-specific).
+pub fn stale_geo_pitch(text: &str) -> bool {
+    let l = text.to_ascii_lowercase();
+    l.contains("norway")
+        || l.contains("oslo")
+        || (l.contains("eu") && l.contains("overlap") && !l.contains("worldwide"))
+}
+
+pub fn jd_is_norway_specific(location: &str, description: &str, title: &str) -> bool {
+    let hay = format!("{location} {description} {title}").to_ascii_lowercase();
+    hay.contains("norway") || hay.contains("oslo")
+}
+
+/// Rewrite stale geo phrases to worldwide remote.
+pub fn scrub_stale_geo_text(text: &str) -> String {
+    let mut out = text.to_string();
+    let replacements = [
+        ("EU/Norway overlap", "open worldwide"),
+        ("eu/norway overlap", "open worldwide"),
+        ("Norway / EU timezone overlap", "any timezone overlap"),
+        ("Norway/EU timezone overlap", "any timezone overlap"),
+        ("ready for EU/Norway overlap", "open to worldwide remote"),
+        ("ready for EU overlap", "open to worldwide remote"),
+        ("EU/Norway", "worldwide"),
+        ("EU overlap", "timezone overlap"),
+        (", EU overlap", ", open worldwide"),
+        (" overlap for Oslo / EU hours", " — flexible timezone overlap"),
+        ("open to Norway / EU", "open worldwide"),
+        ("Remote (Venezuela) | EU/Norway overlap", "Remote worldwide (Venezuela)"),
+        ("Remote from Venezuela, EU/Norway overlap", "Remote from Venezuela, open worldwide"),
+        ("Remote from Venezuela, EU overlap", "Remote from Venezuela, open worldwide"),
+    ];
+    for (from, to) in replacements {
+        out = out.replace(from, to);
+        // case-insensitive light pass for common leftover
+        let lower = out.to_ascii_lowercase();
+        let from_l = from.to_ascii_lowercase();
+        if lower.contains(&from_l) && from_l != from {
+            // already handled exact; skip messy CI replace
+        }
+        let _ = lower;
+    }
+    out
+}
+
+/// Scrub pitch/why/cover fields on a draft JSON value when the JD is not Norway-specific.
+pub fn scrub_draft_geo(draft: &mut serde_json::Value, location: &str, description: &str, title: &str) {
+    if jd_is_norway_specific(location, description, title) {
+        return;
+    }
+    for key in ["pitch", "why_company", "cover_note"] {
+        if let Some(s) = draft.get(key).and_then(|v| v.as_str()) {
+            if stale_geo_pitch(s) {
+                draft[key] = serde_json::Value::String(scrub_stale_geo_text(s));
+            }
+        }
+    }
+}
+
 /// Profile coach — parallel agent; never invents employers or fake metrics.
 pub fn profile_coach_prompt(
     platform: &str,

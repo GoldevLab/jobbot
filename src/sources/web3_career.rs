@@ -7,7 +7,18 @@ use scraper::{Html, Selector};
 
 const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
+#[allow(dead_code)]
 pub async fn discover(keywords: &str, locations: &str) -> Result<Vec<DiscoveredJob>> {
+    discover_skipping_known(keywords, locations, &std::collections::HashSet::new()).await
+}
+
+/// Like [`discover`], but only detail-scrapes jobs whose `external_id` is not already known.
+/// Avoids hammering web3.career when the board set is stable (sterile discovers).
+pub async fn discover_skipping_known(
+    keywords: &str,
+    locations: &str,
+    known_ids: &std::collections::HashSet<String>,
+) -> Result<Vec<DiscoveredJob>> {
     let client = reqwest::Client::builder()
         .user_agent(UA)
         .timeout(std::time::Duration::from_secs(30))
@@ -58,6 +69,8 @@ pub async fn discover(keywords: &str, locations: &str) -> Result<Vec<DiscoveredJ
         .collect();
 
     // Soft filter on title/url only (description empty until enrich).
+    // Prefer backend/Node/Web3 signals; do not treat every "engineer" as a match alone
+    // when settings keywords are set (cuts sales/compliance noise).
     out.retain(|j| {
         let hay = format!(
             "{} {} {}",
@@ -65,20 +78,34 @@ pub async fn discover(keywords: &str, locations: &str) -> Result<Vec<DiscoveredJ
             j.url.to_lowercase(),
             j.location.to_lowercase()
         );
-        let kw_ok = keywords_l.is_empty()
-            || keywords_l.iter().any(|k| hay.contains(k))
-            || hay.contains("engineer")
-            || hay.contains("developer")
-            || hay.contains("backend");
+        let backendish = hay.contains("backend")
+            || hay.contains("back-end")
+            || hay.contains("back end")
+            || hay.contains("nodejs")
+            || hay.contains("node.js")
+            || hay.contains("typescript")
+            || hay.contains("rust")
+            || hay.contains("web3")
+            || hay.contains("solidity")
+            || hay.contains("blockchain");
+        let kw_ok = if keywords_l.is_empty() {
+            backendish || hay.contains("engineer") || hay.contains("developer")
+        } else {
+            keywords_l.iter().any(|k| hay.contains(k)) || backendish
+        };
         let loc_ok = locs_l.is_empty()
             || j.location.to_lowercase().contains("remote")
             || locs_l.iter().any(|l| hay.contains(l));
         kw_ok && loc_ok
     });
 
-    // Enrich as many as we can without hammering the board (~1.5s each).
-    let enrich_n = out.len().min(24);
-    for job in out.iter_mut().take(enrich_n) {
+    // Detail-scrape only unknowns (or everything if known set empty on first run).
+    let mut unknown: Vec<_> = out
+        .iter_mut()
+        .filter(|j| known_ids.is_empty() || !known_ids.contains(&j.external_id))
+        .collect();
+    let enrich_n = unknown.len().min(24);
+    for job in unknown.iter_mut().take(enrich_n) {
         if let Ok(detail) = fetch_detail(&client, &job.url).await {
             if let Some(apply) = detail.apply_url.as_deref() {
                 match resolve_apply_url(&client, apply).await {
@@ -99,6 +126,7 @@ pub async fn discover(keywords: &str, locations: &str) -> Result<Vec<DiscoveredJ
                 job.location = detail.location;
             }
         }
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     }
 
     Ok(out)

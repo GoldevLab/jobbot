@@ -210,7 +210,6 @@ async fn mark_job_applied(
         .await
         .map_err(|_| SubmitError::new("Could not update job"))?;
         db::log_event(Some(id), "info", "marked applied manually").await;
-        return Ok(Redirect::to(&format!("/jobs/{id}")));
     }
     Ok(Redirect::to("/"))
 }

@@ -132,10 +132,7 @@ pub async fn run_analyze_now() -> Result<()> {
 }
 
 fn stale_geo_pitch(text: &str) -> bool {
-    let l = text.to_ascii_lowercase();
-    l.contains("norway")
-        || l.contains("oslo")
-        || (l.contains("eu") && l.contains("overlap") && !l.contains("worldwide"))
+    style::stale_geo_pitch(text)
 }
 
 /// Apply every open (`new`) suggestion we can push, clear the rest so coach unblocks.

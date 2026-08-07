@@ -469,6 +469,9 @@ pub async fn draft_learning_context(limit: i64) -> String {
     }
     let mut out = String::from("Kept profile lines:\n");
     for (platform, title, body) in rows {
+        if crate::style::stale_geo_pitch(&body) {
+            continue; // don't teach apply-agent Norway/EU-only lines
+        }
         out.push_str(&format!(
             "- [{platform}] {title}: {}\n",
             crate::style::truncate(&body, 200)
@@ -494,6 +497,9 @@ pub async fn profile_learning_context(limit: i64) -> String {
         if !rows.is_empty() {
             out.push_str("Lessons (keep = prefer this style; dismiss = avoid; apply_agent = what sells in drafts):\n");
             for (source, title, body) in rows {
+                if crate::style::stale_geo_pitch(&body) {
+                    continue;
+                }
                 let body = crate::style::truncate(&body, 220);
                 out.push_str(&format!("- [{source}] {title}: {body}\n"));
             }
@@ -525,7 +531,7 @@ pub async fn profile_learning_context(limit: i64) -> String {
                             .map(|s| s.to_string())
                     })
                     .unwrap_or_default();
-                if pitch.is_empty() {
+                if pitch.is_empty() || crate::style::stale_geo_pitch(&pitch) {
                     continue;
                 }
                 let sc = score.map(|s| format!("{s:.0}")).unwrap_or_else(|| "?".into());
@@ -669,23 +675,38 @@ pub async fn upsert_job(
 }
 
 pub async fn list_jobs(limit: i64) -> anyhow::Result<Vec<Job>> {
+    // Manual/ready first — those need human action; skipped must not bury them.
     let rows = sqlx::query_as::<_, Job>(
         "SELECT * FROM jobs ORDER BY CASE status
-            WHEN 'discovered' THEN 0
-            WHEN 'scoring' THEN 1
-            WHEN 'drafting' THEN 2
-            WHEN 'ready' THEN 3
-            WHEN 'applying' THEN 4
-            WHEN 'applied' THEN 5
-            WHEN 'skipped' THEN 6
-            WHEN 'failed' THEN 7
-            ELSE 8 END, updated_at DESC
+            WHEN 'manual' THEN 0
+            WHEN 'ready' THEN 1
+            WHEN 'ready_draft' THEN 2
+            WHEN 'applying' THEN 3
+            WHEN 'drafting' THEN 4
+            WHEN 'scoring' THEN 5
+            WHEN 'discovered' THEN 6
+            WHEN 'applied' THEN 7
+            WHEN 'failed' THEN 8
+            WHEN 'skipped' THEN 9
+            ELSE 10 END,
+            COALESCE(score, 0) DESC,
+            updated_at DESC
          LIMIT ?",
     )
     .bind(limit)
     .fetch_all(pool())
     .await?;
     Ok(rows)
+}
+
+/// External IDs already stored for a source (used to skip sterile detail scrapes).
+pub async fn existing_external_ids(source: &str) -> anyhow::Result<std::collections::HashSet<String>> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT external_id FROM jobs WHERE source = ?")
+            .bind(source)
+            .fetch_all(pool())
+            .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
 pub async fn list_events(limit: i64) -> anyhow::Result<Vec<EventRow>> {

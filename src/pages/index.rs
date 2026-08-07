@@ -51,6 +51,101 @@ fn draft_pitch(draft_json: &Option<String>) -> String {
         .unwrap_or_default()
 }
 
+fn ats_blocked_manual(job: &Job) -> bool {
+    let err = job.last_error.as_deref().unwrap_or("").to_ascii_lowercase();
+    err.contains("video")
+        || err.contains("captcha")
+        || err.contains("required file")
+        || err.contains("multi_file")
+        || err.contains("manual:")
+}
+
+fn apply_hint(job: &Job) -> &'static str {
+    let u = job.apply_url.as_deref().unwrap_or("");
+    let http = crate::sources::web3_career::is_http_auto_applyable_url(u);
+    let chrome = crate::sources::web3_career::is_auto_applyable_url(u);
+    if job.status == "manual" || ats_blocked_manual(job) {
+        if ats_blocked_manual(job) && http {
+            "manual — ATS needs video/file (use kit)"
+        } else if u.is_empty() || u.contains("web3.career") {
+            "manual — download kit.zip"
+        } else {
+            "manual — kit.zip + paste"
+        }
+    } else if job.status == "ready" && http {
+        "ATS — HTTP auto-apply pending"
+    } else if chrome {
+        "ATS — needs Chrome local"
+    } else if u.is_empty() || u.contains("web3.career") {
+        "manual — download kit.zip"
+    } else {
+        "manual — kit.zip + paste"
+    }
+}
+
+fn is_actionable(job: &Job) -> bool {
+    matches!(job.status.as_str(), "manual" | "ready" | "ready_draft")
+}
+
+fn job_row(j: Job) -> View {
+    let title = j.title.clone();
+    let company = if j.company.is_empty() {
+        "—".into()
+    } else {
+        j.company.clone()
+    };
+    let score = j
+        .score
+        .map(|x| format!("{x:.0}"))
+        .unwrap_or_else(|| "—".into());
+    let url = j.apply_url.clone().unwrap_or(j.url.clone());
+    let hint = apply_hint(&j);
+    let badge = status_badge(&j.status);
+    let pitch = draft_pitch(&j.draft_json);
+    let detail = format!("/jobs/{}", j.id);
+    let err = j.last_error.clone().unwrap_or_default();
+    let show_mark = matches!(j.status.as_str(), "manual" | "ready");
+    let id = j.id.to_string();
+    view! {
+        <tr>
+            <td>{badge}<div class="muted">{j.source}</div></td>
+            <td>
+                <strong>{title}</strong>
+                <div class="muted">{format!("{company} — {}", j.location)}</div>
+                <div class="muted">{hint}</div>
+                {if !pitch.is_empty() {
+                    view! { <div class="pitch">{pitch}</div> }
+                } else if !err.is_empty() && (j.status == "failed" || j.status == "manual") {
+                    view! { <div class="muted">{crate::style::truncate(&err, 120)}</div> }
+                } else {
+                    View::empty()
+                }}
+            </td>
+            <td>{score}</td>
+            <td class="row-actions">
+                <a href={detail.clone()}>"draft"</a>
+                {" · "}
+                <a href={format!("/jobs/{}/kit.zip", j.id)}>"zip"</a>
+                {" · "}
+                <a href={format!("/jobs/{}/cv.pdf", j.id)}>"cv"</a>
+                {" · "}
+                <a href={url} target="_blank" rel="noreferrer">"open"</a>
+                {if show_mark {
+                    view! {
+                        {" · "}
+                        <Form submit={crate::mark_job_applied}>
+                            <input type="hidden" name="id" value={id} />
+                            <button class="btn btn-ghost" type="submit" style="display:inline;padding:0;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">"mark applied"</button>
+                        </Form>
+                    }
+                } else {
+                    View::empty()
+                }}
+            </td>
+        </tr>
+    }
+}
+
 pub fn page(_req: FlowRequest) -> View {
     load_all3(
         use_queue_settings_load(),
@@ -75,24 +170,18 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
         .iter()
         .filter(|j| matches!(j.status.as_str(), "ready" | "manual"))
         .count();
-    let kit_only = jobs
-        .iter()
-        .filter(|j| {
-            matches!(j.status.as_str(), "ready" | "manual")
-                && !crate::sources::web3_career::is_http_auto_applyable_url(
-                    j.apply_url.as_deref().unwrap_or(""),
-                )
-        })
-        .count();
+    // Honest counts: HTTP only while still `ready` (not blocked manuals).
     let http_ready = jobs
         .iter()
         .filter(|j| {
-            matches!(j.status.as_str(), "ready" | "manual")
+            j.status == "ready"
                 && crate::sources::web3_career::is_http_auto_applyable_url(
                     j.apply_url.as_deref().unwrap_or(""),
                 )
+                && !ats_blocked_manual(j)
         })
         .count();
+    let kit_only = ready.saturating_sub(http_ready);
     let applied = jobs.iter().filter(|j| j.status == "applied").count();
     let skipped = jobs.iter().filter(|j| j.status == "skipped").count();
 
@@ -100,7 +189,7 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
         "Auto-apply is OFF. Turn it on in Settings (or JOBBOT_AUTO_APPLY=true). Recruitee can submit over HTTP without Chrome; Greenhouse/Ashby need local Chrome CDP."
             .to_string()
     } else if chrome_hint.is_none() {
-        "Auto-apply ON (HTTP). Recruitee without video/captcha submits from Fly. Manual jobs: open draft → Download CV PDF + paste kit, then apply by hand."
+        "Auto-apply ON (HTTP). Recruitee without video/captcha submits from Fly. Manual jobs: open draft → Download CV PDF + paste kit, then Mark applied."
             .to_string()
     } else {
         "Auto-apply ON — HTTP Recruitee first, then Chrome. Manual jobs have CV + paste kit on the draft page."
@@ -118,65 +207,11 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
         })
         .collect::<String>();
 
-    let rows = jobs
-        .into_iter()
-        .map(|j| {
-            let title = j.title.clone();
-            let company = if j.company.is_empty() {
-                "—".into()
-            } else {
-                j.company.clone()
-            };
-            let score = j
-                .score
-                .map(|x| format!("{x:.0}"))
-                .unwrap_or_else(|| "—".into());
-            let url = j.apply_url.clone().unwrap_or(j.url.clone());
-            let apply_hint = {
-                let u = j.apply_url.as_deref().unwrap_or("");
-                if crate::sources::web3_career::is_http_auto_applyable_url(u) {
-                    "ATS — HTTP auto-apply"
-                } else if crate::sources::web3_career::is_auto_applyable_url(u) {
-                    "ATS — needs Chrome local"
-                } else if u.is_empty() || u.contains("web3.career") {
-                    "manual — download kit.zip"
-                } else {
-                    "manual — kit.zip + paste"
-                }
-            };
-            let badge = status_badge(&j.status);
-            let pitch = draft_pitch(&j.draft_json);
-            let detail = format!("/jobs/{}", j.id);
-            let err = j.last_error.clone().unwrap_or_default();
-            view! {
-                <tr>
-                    <td>{badge}<div class="muted">{j.source}</div></td>
-                    <td>
-                        <strong>{title}</strong>
-                        <div class="muted">{format!("{company} — {}", j.location)}</div>
-                        <div class="muted">{apply_hint}</div>
-                        {if !pitch.is_empty() {
-                            view! { <div class="pitch">{pitch}</div> }
-                        } else if !err.is_empty() && j.status == "failed" {
-                            view! { <div class="muted">{err}</div> }
-                        } else {
-                            View::empty()
-                        }}
-                    </td>
-                    <td>{score}</td>
-                    <td class="row-actions">
-                        <a href={detail.clone()}>"draft"</a>
-                        {" · "}
-                        <a href={format!("/jobs/{}/kit.zip", j.id)}>"zip"</a>
-                        {" · "}
-                        <a href={format!("/jobs/{}/cv.pdf", j.id)}>"cv"</a>
-                        {" · "}
-                        <a href={url} target="_blank" rel="noreferrer">"open"</a>
-                    </td>
-                </tr>
-            }
-        })
-        .collect::<Vec<_>>();
+    let actionable: Vec<Job> = jobs.iter().filter(|j| is_actionable(j)).cloned().collect();
+    let rest: Vec<Job> = jobs.into_iter().filter(|j| !is_actionable(&j)).collect();
+
+    let action_rows = actionable.into_iter().map(job_row).collect::<Vec<_>>();
+    let rest_rows = rest.into_iter().take(40).map(job_row).collect::<Vec<_>>();
 
     view! {
         <div>
@@ -194,7 +229,7 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                     </span>
                     <span class="muted">
                         {format!(
-                            "queue: {discovered} new · {scoring} in-flight · {ready} ready/manual ({http_ready} HTTP · {kit_only} kit) · {applied} applied · {skipped} skipped · auto-apply={}",
+                            "queue: {discovered} new · {scoring} in-flight · {ready} ready/manual ({http_ready} HTTP pending · {kit_only} kit) · {applied} applied · {skipped} skipped · auto-apply={}",
                             if auto_apply { "on" } else { "off" }
                         )}
                     </span>
@@ -229,7 +264,32 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
             </div>
 
             <div class="card">
-                <h2>"Jobs"</h2>
+                <h2>"Needs you"</h2>
+                <p class="muted">"Manual / ready jobs — download kit, apply, then mark applied. HTTP-pending stays here until the worker submits."</p>
+                {if action_rows.is_empty() {
+                    view! { <p class="muted">"Nothing waiting — discover or wait for new matches."</p> }
+                } else {
+                    view! {
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>"Status"</th>
+                                    <th>"Role / tailored pitch"</th>
+                                    <th>"Score"</th>
+                                    <th>"Links"</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {action_rows}
+                            </tbody>
+                        </table>
+                    }
+                }}
+            </div>
+
+            <div class="card">
+                <h2>"Rest of queue"</h2>
+                <p class="muted">"Applied, skipped, failed — noise kept out of the way."</p>
                 <table>
                     <thead>
                         <tr>
@@ -240,7 +300,7 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                         </tr>
                     </thead>
                     <tbody>
-                        {rows}
+                        {rest_rows}
                     </tbody>
                 </table>
             </div>
