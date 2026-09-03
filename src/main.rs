@@ -79,7 +79,7 @@ async fn save_settings(
     .bind(form.expected_salary_usd.trim())
     .bind(form.cv_path.trim())
     .bind(form.keywords.trim())
-    .bind(form.locations.trim())
+    .bind(style::normalize_search_locations(form.locations.trim()))
     .bind(if auto { 1 } else { 0 })
     .bind(rate)
     .bind(form.profile_notes.trim())
@@ -222,11 +222,16 @@ async fn keep_profile_suggestion(
     let id: i64 = form.id.trim().parse().unwrap_or(0);
     if id > 0 {
         if let Ok(Some(sug)) = db::get_profile_suggestion(id).await {
+            let body = if style::stale_geo_pitch(&sug.body) {
+                style::scrub_stale_geo_text(&sug.body)
+            } else {
+                sug.body.clone()
+            };
             let _ = db::insert_profile_lesson(
                 "keep",
                 &sug.platform,
                 &sug.title,
-                &sug.body,
+                &body,
                 1.5,
             )
             .await;
@@ -236,64 +241,66 @@ async fn keep_profile_suggestion(
                 && (title_l.contains("bio") || title_l.contains("topic"))
                 && github::token_from_env().is_some()
             {
-                let mut owner = sug
-                    .source_json
-                    .as_deref()
-                    .and_then(|s| {
-                        s.lines()
-                            .find(|l| l.starts_with("login:"))
-                            .map(|l| l.trim_start_matches("login:").trim().to_string())
-                    })
-                    .unwrap_or_default();
-                if owner.is_empty() {
-                    if let Ok(s) = db::get_settings().await {
-                        owner = s
-                            .github
-                            .trim()
-                            .trim_end_matches('/')
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or("GoldevLab")
-                            .to_string();
-                    } else {
-                        owner = "GoldevLab".into();
+                let skip_stale_bio =
+                    title_l.contains("bio") && style::stale_geo_pitch(&body);
+                if skip_stale_bio {
+                    db::log_profile_event(
+                        "warn",
+                        "keep: skipped GitHub bio push (could not rewrite stale geo)",
+                    )
+                    .await;
+                } else {
+                    let mut owner = sug
+                        .source_json
+                        .as_deref()
+                        .and_then(|s| {
+                            s.lines()
+                                .find(|l| l.starts_with("login:"))
+                                .map(|l| l.trim_start_matches("login:").trim().to_string())
+                        })
+                        .unwrap_or_default();
+                    if owner.is_empty() {
+                        if let Ok(s) = db::get_settings().await {
+                            owner = s
+                                .github
+                                .trim()
+                                .trim_end_matches('/')
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or("GoldevLab")
+                                .to_string();
+                        } else {
+                            owner = "GoldevLab".into();
+                        }
                     }
-                }
-                if let Some(msg) = github::apply_from_suggestion(
-                    &owner,
-                    &sug.title,
-                    &sug.body,
-                    &[],
-                )
-                .await
-                {
-                    db::log_profile_event("info", format!("keep→auto: {msg}")).await;
-                    let _ = db::set_profile_suggestion_status(id, "applied").await;
-                    return Ok(Redirect::to("/profile"));
+                    let allowed = github::list_owner_repos(&owner).await.unwrap_or_default();
+                    if let Some(msg) = github::apply_from_suggestion(
+                        &owner,
+                        &sug.title,
+                        &body,
+                        &allowed,
+                    )
+                    .await
+                    {
+                        db::log_profile_event("info", format!("keep→auto: {msg}")).await;
+                        let _ = db::set_profile_suggestion_status(id, "applied").await;
+                        return Ok(Redirect::to("/profile"));
+                    }
                 }
             }
             if sug.platform == "linkedin"
                 && (title_l.contains("about") || title_l.contains("headline"))
             {
                 if let Ok(settings) = db::get_settings().await {
-                    let mut notes = settings.profile_notes;
                     let label = if title_l.contains("headline") {
                         "Headline"
                     } else {
                         "About"
                     };
-                    let block = format!("{label}:\n{}", sug.body.trim());
-                    if !notes.contains(sug.body.trim()) {
-                        if !notes.is_empty() {
-                            notes.push_str("\n\n");
-                        }
-                        notes.push_str(&block);
-                        let _ = sqlx::query(
-                            "UPDATE settings SET profile_notes = ?, updated_at = datetime('now') WHERE id = 1",
-                        )
-                        .bind(&notes)
-                        .execute(db::pool())
-                        .await;
+                    let next =
+                        style::upsert_labeled_block(&settings.profile_notes, label, body.trim());
+                    if next != settings.profile_notes {
+                        let _ = db::set_profile_notes(&next).await;
                         db::log_profile_event(
                             "info",
                             format!("keep→notes: saved LinkedIn {label} into Profile notes"),

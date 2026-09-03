@@ -87,8 +87,21 @@ th { color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: 
   font-size: 0.84rem;
   color: #c5d6c9;
   line-height: 1.35;
+  user-select: text;
 }
 .live { max-height: 220px; }
+.activity-fold { margin-top: 1.25rem; }
+.activity-fold > summary {
+  cursor: pointer;
+  list-style: none;
+  margin-bottom: 0.6rem;
+}
+.activity-fold > summary::-webkit-details-marker { display: none; }
+.activity-fold > summary::before {
+  content: "▸ ";
+  color: var(--muted);
+}
+.activity-fold[open] > summary::before { content: "▾ "; }
 .row-actions { white-space: nowrap; }
 pre.log { white-space: pre-wrap; }
 .status-pill {

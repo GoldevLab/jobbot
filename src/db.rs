@@ -56,22 +56,25 @@ pub async fn init_db() -> anyhow::Result<()> {
         }
     }
     if let Ok(loc) = std::env::var("JOBBOT_LOCATIONS") {
-        let loc = loc.trim();
-        // Empty / * / all → worldwide (no location filter).
-        let value = if loc.is_empty()
-            || loc == "*"
-            || loc.eq_ignore_ascii_case("all")
-            || loc.eq_ignore_ascii_case("worldwide")
-        {
-            ""
-        } else {
-            loc
-        };
+        let value = crate::style::normalize_search_locations(loc.trim());
         let _ = sqlx::query("UPDATE settings SET locations = ? WHERE id = 1")
-            .bind(value)
+            .bind(&value)
             .execute(&pool)
             .await;
     }
+    // Always clear leftover Norway/EU search filters (old default).
+    let _ = sqlx::query(
+        r#"
+        UPDATE settings SET locations = '', updated_at = datetime('now')
+        WHERE id = 1 AND (
+            lower(locations) LIKE '%norway%'
+            OR lower(locations) LIKE '%oslo%'
+            OR locations IN ('norway,oslo,remote,europe', 'norway, oslo, remote, europe')
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await;
     if let Ok(rate) = std::env::var("JOBBOT_RATE_LIMIT_SECS") {
         if let Ok(n) = rate.trim().parse::<i64>() {
             let _ = sqlx::query("UPDATE settings SET rate_limit_secs = ? WHERE id = 1")
@@ -90,7 +93,61 @@ pub async fn init_db() -> anyhow::Result<()> {
 
     POOL.set(pool)
         .map_err(|_| anyhow::anyhow!("database pool already initialized"))?;
+    let _ = scrub_stale_geo_store().await;
     Ok(())
+}
+
+/// Rewrite leftover Norway/EU copy in notes + open cards; force worldwide search.
+pub async fn scrub_stale_geo_store() -> anyhow::Result<u64> {
+    let mut n = 0u64;
+    if let Ok(s) = get_settings().await {
+        let notes = if crate::style::stale_geo_pitch(&s.profile_notes) {
+            crate::style::scrub_stale_geo_text(&s.profile_notes)
+        } else {
+            s.profile_notes.clone()
+        };
+        let locs = crate::style::normalize_search_locations(&s.locations);
+        if notes != s.profile_notes || locs != s.locations {
+            sqlx::query(
+                "UPDATE settings SET profile_notes = ?, locations = ?, updated_at = datetime('now') WHERE id = 1",
+            )
+            .bind(&notes)
+            .bind(&locs)
+            .execute(pool())
+            .await?;
+            n += 1;
+        }
+    }
+
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, body FROM profile_suggestions WHERE status = 'new'",
+    )
+    .fetch_all(pool())
+    .await?;
+    for (id, body) in rows {
+        if !crate::style::stale_geo_pitch(&body) {
+            continue;
+        }
+        let next = crate::style::scrub_stale_geo_text(&body);
+        if crate::style::stale_geo_pitch(&next) {
+            sqlx::query(
+                "UPDATE profile_suggestions SET status = 'dismissed', updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(id)
+            .execute(pool())
+            .await?;
+        } else {
+            sqlx::query(
+                "UPDATE profile_suggestions SET body = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(&next)
+            .bind(id)
+            .execute(pool())
+            .await?;
+        }
+        n += 1;
+    }
+    Ok(n)
 }
 
 pub fn pool() -> &'static sqlx::SqlitePool {
@@ -205,6 +262,16 @@ pub async fn set_worker_running(running: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn set_profile_notes(notes: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE settings SET profile_notes = ?, updated_at = datetime('now') WHERE id = 1",
+    )
+    .bind(notes)
+    .execute(pool())
+    .await?;
+    Ok(())
+}
+
 pub async fn set_profile_worker_running(running: bool) -> anyhow::Result<()> {
     sqlx::query(
         "UPDATE settings SET profile_worker_running = ?, updated_at = datetime('now') WHERE id = 1",
@@ -226,6 +293,22 @@ pub async fn log_profile_event(level: &str, message: impl AsRef<str>) {
             .execute(pool()),
     )
     .await;
+}
+
+/// Skip insert when the newest event is the same line (stops idle-log spam).
+pub async fn log_profile_event_if_changed(level: &str, message: impl AsRef<str>) {
+    let msg = message.as_ref().to_string();
+    let last: Option<(String,)> = sqlx::query_as(
+        "SELECT message FROM profile_events ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_optional(pool())
+    .await
+    .ok()
+    .flatten();
+    if last.as_ref().is_some_and(|r| r.0 == msg) {
+        return;
+    }
+    log_profile_event(level, msg).await;
 }
 
 pub async fn insert_profile_suggestion(
@@ -272,7 +355,7 @@ pub async fn profile_suggestion_duplicate(platform: &str, title: &str, body: &st
     row.is_some()
 }
 
-/// Count open (`new`) suggestions whose title matches a kind (bio/headline/about/overview).
+/// Count open (`new`) suggestions whose title matches a kind (bio/headline/pin/…).
 pub async fn profile_open_kind_count(platform: &str, kind: &str) -> i64 {
     let like = format!("%{kind}%").to_ascii_lowercase();
     let row: Option<(i64,)> = sqlx::query_as(
@@ -290,10 +373,10 @@ pub async fn profile_open_kind_count(platform: &str, kind: &str) -> i64 {
     row.map(|r| r.0).unwrap_or(0)
 }
 
-/// Keep at most one open (`new`) suggestion per kind (bio/headline/about/overview) per platform.
+/// Keep at most one open (`new`) suggestion per kind per platform.
 /// Older duplicates are dismissed so the queue stays usable.
 pub async fn prune_open_profile_suggestions(platform: &str) -> anyhow::Result<u64> {
-    let kinds = ["bio", "headline", "about", "overview"];
+    let kinds = crate::style::PROFILE_COPY_KINDS;
     let mut n = 0u64;
     for kind in kinds {
         let like = format!("%{kind}%");
@@ -322,9 +405,37 @@ pub async fn prune_open_profile_suggestions(platform: &str) -> anyhow::Result<u6
     Ok(n)
 }
 
-/// Nuclear cleanup: dismiss every open overview across platforms, and cap open copy slots.
+/// Fix platform/title drift on open cards (e.g. "github · LinkedIn headline").
+pub async fn reclassify_open_profile_suggestions() -> anyhow::Result<u64> {
+    let rows: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, platform, title FROM profile_suggestions WHERE status = 'new'",
+    )
+    .fetch_all(pool())
+    .await?;
+    let mut n = 0u64;
+    for (id, platform, title) in rows {
+        let canon = crate::style::canonical_suggestion_title(&title);
+        let plat = crate::style::canonical_platform(&title, &platform);
+        if plat == platform && canon == title {
+            continue;
+        }
+        sqlx::query(
+            "UPDATE profile_suggestions SET platform = ?, title = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(&plat)
+        .bind(&canon)
+        .bind(id)
+        .execute(pool())
+        .await?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Nuclear cleanup: dismiss overviews + invented-repo cards, then cap open copy slots.
 pub async fn prune_all_profile_suggestion_spam() -> anyhow::Result<u64> {
     let mut n = 0u64;
+    n += reclassify_open_profile_suggestions().await?;
     // 1) Dismiss ALL open overviews (they are noise — actionable copy is bio/headline/About).
     let res = sqlx::query(
         r#"
@@ -336,6 +447,22 @@ pub async fn prune_all_profile_suggestion_spam() -> anyhow::Result<u64> {
     .execute(pool())
     .await?;
     n += res.rows_affected();
+
+    // 2) Drop open cards that still pitch invented repo slugs.
+    for slug in crate::style::INVENTED_REPO_SLUGS {
+        let like = format!("%{slug}%");
+        let res = sqlx::query(
+            r#"
+            UPDATE profile_suggestions
+            SET status = 'dismissed', updated_at = datetime('now')
+            WHERE status = 'new' AND lower(body) LIKE ?
+            "#,
+        )
+        .bind(like)
+        .execute(pool())
+        .await?;
+        n += res.rows_affected();
+    }
 
     for platform in ["github", "linkedin", "general"] {
         n += prune_open_profile_suggestions(platform).await?;
@@ -372,6 +499,47 @@ pub async fn count_open_profile_suggestions() -> i64 {
     .ok()
     .flatten();
     row.map(|r| r.0).unwrap_or(0)
+}
+
+/// Open bio/headline/About cards — these train voice and should pause the coach.
+pub async fn count_blocking_profile_suggestions() -> i64 {
+    let row: Option<(i64,)> = sqlx::query_as(
+        r#"
+        SELECT COUNT(*) FROM profile_suggestions
+        WHERE status = 'new'
+          AND (
+            lower(title) LIKE '%headline%'
+            OR lower(title) LIKE '%about%'
+            OR lower(title) LIKE '%bio%'
+          )
+        "#,
+    )
+    .fetch_optional(pool())
+    .await
+    .ok()
+    .flatten();
+    row.map(|r| r.0).unwrap_or(0)
+}
+
+/// True if this checklist kind was already kept, dismissed, or applied.
+pub async fn profile_kind_decided(platform: &str, kind: &str) -> bool {
+    let like = format!("%{kind}%").to_ascii_lowercase();
+    let row: Option<(i64,)> = sqlx::query_as(
+        r#"
+        SELECT id FROM profile_lessons
+        WHERE lower(platform) = lower(?)
+          AND source IN ('keep', 'dismiss', 'applied')
+          AND lower(title) LIKE ?
+        LIMIT 1
+        "#,
+    )
+    .bind(platform)
+    .bind(like)
+    .fetch_optional(pool())
+    .await
+    .ok()
+    .flatten();
+    row.is_some()
 }
 
 pub async fn list_profile_suggestions(limit: i64) -> anyhow::Result<Vec<ProfileSuggestion>> {

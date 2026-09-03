@@ -120,7 +120,7 @@ pub async fn set_authenticated_bio(bio: &str) -> Result<String> {
         return Err(anyhow!("bio write skipped (token lacks profile permission)"));
     }
     let token = token_from_env().ok_or_else(|| anyhow!("GITHUB_TOKEN not set"))?;
-    let bio = sanitize_bio(bio);
+    let bio = sanitize_bio(&crate::style::scrub_stale_geo_text(bio));
     let client = client(&token)?;
     let resp = client
         .patch("https://api.github.com/user")

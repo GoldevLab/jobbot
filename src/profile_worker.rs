@@ -58,19 +58,22 @@ async fn run_loop(stop: Arc<AtomicBool>) -> Result<()> {
             continue;
         }
 
-        // Back off hard when the queue is already full of open items.
-        let open = db::count_open_profile_suggestions().await;
-        if open >= 6 {
-            db::log_profile_event(
+        // Only bio / headline / About should pause the coach. Pin/README
+        // checklists must not fill the queue and freeze analysis.
+        let _ = db::prune_all_profile_suggestion_spam().await;
+        let blocking = db::count_blocking_profile_suggestions().await;
+        if blocking >= 3 {
+            db::log_profile_event_if_changed(
                 "info",
-                format!("coach idle — {open} open suggestions (Keep/Dismiss first)"),
+                format!(
+                    "coach idle — {blocking} open copy items (Keep/Dismiss headline/About/bio first)"
+                ),
             )
             .await;
             tokio::time::sleep(Duration::from_secs(
                 settings.rate_limit_secs.max(180) as u64,
             ))
             .await;
-            let _ = db::prune_all_profile_suggestion_spam().await;
             continue;
         }
 
@@ -157,7 +160,11 @@ pub async fn apply_all_open_suggestions() -> Result<(u64, u64, u64)> {
 
     for sug in open {
         let title_l = sug.title.to_ascii_lowercase();
-        let body = sug.body.trim();
+        let mut body = sug.body.trim().to_string();
+        if style::stale_geo_pitch(&body) {
+            body = style::scrub_stale_geo_text(&body);
+        }
+        let body = body.as_str();
 
         // Never push Norway/EU-only bios after worldwide repositioning.
         if sug.platform == "github" && title_l.contains("bio") && stale_geo_pitch(body) {
@@ -213,18 +220,10 @@ pub async fn apply_all_open_suggestions() -> Result<(u64, u64, u64)> {
             } else {
                 "About"
             };
-            let block = format!("{label}:\n{body}");
-            if !notes.contains(body) {
-                if !notes.is_empty() {
-                    notes.push_str("\n\n");
-                }
-                notes.push_str(&block);
-                let _ = sqlx::query(
-                    "UPDATE settings SET profile_notes = ?, updated_at = datetime('now') WHERE id = 1",
-                )
-                .bind(&notes)
-                .execute(db::pool())
-                .await;
+            let next = style::upsert_labeled_block(&notes, label, body);
+            if next != notes {
+                notes = next;
+                let _ = db::set_profile_notes(&notes).await;
             }
             let _ = db::insert_profile_lesson("keep", &sug.platform, &sug.title, body, 1.2).await;
             let _ = db::set_profile_suggestion_status(sug.id, "kept").await;
@@ -237,7 +236,15 @@ pub async fn apply_all_open_suggestions() -> Result<(u64, u64, u64)> {
             continue;
         }
 
-        // Manual-only / invented / non-API items — clear the gate.
+        // Manual-only / invented / non-API items — clear the gate and remember.
+        let _ = db::insert_profile_lesson(
+            "dismiss",
+            &sug.platform,
+            &sug.title,
+            body,
+            -0.4,
+        )
+        .await;
         let _ = db::set_profile_suggestion_status(sug.id, "dismissed").await;
         dismissed += 1;
         db::log_profile_event(
@@ -283,8 +290,18 @@ async fn coach_platform(platform: &str, settings: &Settings) -> Result<usize> {
     };
 
     let learning = db::profile_learning_context(24).await;
+    let live_repos = if platform == "github" {
+        let repos = crate::github::repos_from_snapshot(&snapshot);
+        if repos.is_empty() {
+            String::new()
+        } else {
+            repos.join(", ")
+        }
+    } else {
+        String::new()
+    };
     let agent = LlmAgent::from_env()?;
-    let prompt = style::profile_coach_prompt(platform, settings, &snapshot, &learning);
+    let prompt = style::profile_coach_prompt(platform, settings, &snapshot, &learning, &live_repos);
     let json = agent.complete_json(&prompt).await?;
     let n = persist_suggestions(platform, &json, Some(&snapshot)).await?;
 
@@ -298,7 +315,7 @@ async fn coach_platform(platform: &str, settings: &Settings) -> Result<usize> {
 
 async fn auto_apply_github(settings: &Settings, json: &Value, snapshot: &str) {
     if crate::github::token_from_env().is_none() {
-        db::log_profile_event(
+        db::log_profile_event_if_changed(
             "warn",
             "GITHUB_TOKEN not set — coach will not push bio/topics to GitHub",
         )
@@ -327,11 +344,21 @@ async fn auto_apply_github(settings: &Settings, json: &Value, snapshot: &str) {
         .cloned()
         .unwrap_or_default();
 
+    let mut applied_bio = false;
+    let mut applied_topics = false;
+
     if !actions.is_empty() {
         let logs = crate::github::apply_actions(&owner, &actions, &allowed).await;
         for line in logs {
             let ok = line.starts_with("applied");
-            if ok {
+            if line.contains("applied GitHub bio") {
+                applied_bio = true;
+                applied_any = true;
+            }
+            if line.contains("applied topics") {
+                applied_topics = true;
+                applied_any = true;
+            } else if ok {
                 applied_any = true;
             }
             // Don't re-log every silent bio skip; only real apply outcomes.
@@ -360,7 +387,14 @@ async fn auto_apply_github(settings: &Settings, json: &Value, snapshot: &str) {
                 crate::github::apply_from_suggestion(&owner, title, body, &allowed).await
             {
                 let ok = msg.contains("auto-applied");
-                if ok {
+                if msg.contains("bio") && ok {
+                    applied_bio = true;
+                    applied_any = true;
+                }
+                if msg.contains("topics") && ok {
+                    applied_topics = true;
+                    applied_any = true;
+                } else if ok {
                     applied_any = true;
                 }
                 db::log_profile_event(if ok { "info" } else { "warn" }, &msg).await;
@@ -377,15 +411,14 @@ async fn auto_apply_github(settings: &Settings, json: &Value, snapshot: &str) {
             0.5,
         )
         .await;
-        // Mark newest github suggestions as applied so UI shows they landed.
         if let Ok(rows) = db::list_profile_suggestions(12).await {
             for sug in rows
                 .into_iter()
                 .filter(|s| s.platform == "github" && s.status == "new")
-                .take(4)
             {
                 let t = sug.title.to_ascii_lowercase();
-                if t.contains("bio") || t.contains("topic") || t.contains("overview") {
+                if (applied_bio && t.contains("bio")) || (applied_topics && t.contains("topic"))
+                {
                     let _ = db::set_profile_suggestion_status(sug.id, "applied").await;
                 }
             }
@@ -394,21 +427,7 @@ async fn auto_apply_github(settings: &Settings, json: &Value, snapshot: &str) {
 }
 
 fn normalize_platform(requested: &str, title: &str) -> String {
-    let t = title.to_ascii_lowercase();
-    if t.contains("linkedin") {
-        return "linkedin".into();
-    }
-    if t.contains("github") || t.contains("readme") || t.contains("pinned") || t.contains("topic")
-    {
-        return "github".into();
-    }
-    if t.contains("bio") && requested == "github" {
-        return "github".into();
-    }
-    if (t.contains("headline") || t.contains("about")) && requested != "github" {
-        return "linkedin".into();
-    }
-    requested.to_string()
+    style::canonical_platform(title, requested)
 }
 
 async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str>) -> Result<usize> {
@@ -434,23 +453,58 @@ async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str
         .await;
     }
 
+    let live_repos = snapshot
+        .map(crate::github::repos_from_snapshot)
+        .unwrap_or_default();
+
     let mut n = 0;
-    for item in suggestions.iter().take(4) {
-        let title = item
+    for item in suggestions.iter().take(3) {
+        let title_raw = item
             .get("title")
             .and_then(|v| v.as_str())
             .unwrap_or("suggestion")
             .trim();
-        let body = item
+        let mut body = item
             .get("body")
             .and_then(|v| v.as_str())
             .unwrap_or("")
-            .trim();
+            .trim()
+            .to_string();
         if body.is_empty() {
             continue;
         }
-        let title_l = title.to_ascii_lowercase();
-        if title_l.contains("overview") {
+        if style::stale_geo_pitch(&body) {
+            body = style::scrub_stale_geo_text(&body);
+            if style::stale_geo_pitch(&body) {
+                continue;
+            }
+        }
+        let plat = normalize_platform(platform, title_raw);
+        let title = style::canonical_suggestion_title(title_raw);
+        let kind = style::profile_suggestion_kind(&title);
+        if matches!(kind, Some("overview")) {
+            continue;
+        }
+        if style::mentions_invented_repo(&body) && !matches!(kind, Some("pin")) {
+            continue;
+        }
+        if let Some("pin") = kind {
+            if live_repos.is_empty() {
+                continue;
+            }
+            body = style::pin_order_from_repos(&live_repos);
+        }
+        if let Some(kind) = kind {
+            if style::is_checklist_kind(kind) && db::profile_kind_decided(&plat, kind).await {
+                continue;
+            }
+            if db::profile_open_kind_count(&plat, kind).await >= 1 {
+                continue;
+            }
+        } else if db::count_open_profile_suggestions().await >= 4 {
+            continue;
+        }
+        if db::profile_suggestion_duplicate(&plat, &title, &body).await {
             continue;
         }
         let priority = item
@@ -458,22 +512,10 @@ async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str
             .and_then(|v| v.as_i64())
             .unwrap_or(2)
             .clamp(1, 3);
-        let plat = normalize_platform(platform, title);
-        if db::profile_suggestion_duplicate(&plat, title, body).await {
-            continue;
-        }
-        // Cap near-duplicate copy slots (same kind already open).
-        if let Some(kind) = suggestion_kind(title) {
-            if db::profile_open_kind_count(&plat, kind).await >= 1 {
-                continue;
-            }
-        } else if db::count_open_profile_suggestions().await >= 6 {
-            continue;
-        }
         db::insert_profile_suggestion(
             &plat,
-            title,
-            body,
+            &title,
+            &body,
             priority,
             snapshot.map(|s| style::truncate(s, 800)).as_deref(),
         )
@@ -490,21 +532,6 @@ async fn persist_suggestions(platform: &str, json: &Value, snapshot: Option<&str
     }
 
     Ok(n)
-}
-
-fn suggestion_kind(title: &str) -> Option<&'static str> {
-    let t = title.to_ascii_lowercase();
-    if t.contains("headline") {
-        Some("headline")
-    } else if t.contains("about") {
-        Some("about")
-    } else if t.contains("bio") {
-        Some("bio")
-    } else if t.contains("overview") {
-        Some("overview")
-    } else {
-        None
-    }
 }
 
 async fn sync_github_bio_notes_from_json(json: &Value) {
@@ -582,12 +609,7 @@ async fn sync_github_bio_notes_from_json(json: &Value) {
         notes.push_str("\n\n");
     }
     notes.push_str(&format!("{marker}\n{bio}"));
-    let _ = sqlx::query(
-        "UPDATE settings SET profile_notes = ?, updated_at = datetime('now') WHERE id = 1",
-    )
-    .bind(&notes)
-    .execute(db::pool())
-    .await;
+    let _ = db::set_profile_notes(&notes).await;
     // Announce at most once per process.
     static NOTES_LOGGED: AtomicBool = AtomicBool::new(false);
     if !had_marker && !NOTES_LOGGED.swap(true, Ordering::Relaxed) {
@@ -619,10 +641,15 @@ async fn sync_linkedin_notes_from_json(json: &Value) {
         if body.is_empty() {
             continue;
         }
+        let body = if style::stale_geo_pitch(body) {
+            style::scrub_stale_geo_text(body)
+        } else {
+            body.to_string()
+        };
         if title.contains("headline") {
-            headline = Some(body.to_string());
+            headline = Some(body);
         } else if title.contains("about") {
-            about = Some(body.to_string());
+            about = Some(body);
         }
     }
     if headline.is_none() && about.is_none() {
@@ -633,31 +660,19 @@ async fn sync_linkedin_notes_from_json(json: &Value) {
     };
     let before = settings.profile_notes.clone();
     let mut notes = settings.profile_notes;
+    // Fill missing labels only — never overwrite a Keep / Settings edit.
     if let Some(h) = headline {
         if !notes.to_ascii_lowercase().contains("headline:") {
-            if !notes.is_empty() {
-                notes.push_str("\n\n");
-            }
-            notes.push_str("Headline:\n");
-            notes.push_str(&h);
+            notes = style::upsert_labeled_block(&notes, "Headline", &h);
         }
     }
     if let Some(a) = about {
         if !notes.to_ascii_lowercase().contains("about:") {
-            if !notes.is_empty() {
-                notes.push_str("\n\n");
-            }
-            notes.push_str("About:\n");
-            notes.push_str(&a);
+            notes = style::upsert_labeled_block(&notes, "About", &a);
         }
     }
     if notes != before {
-        let _ = sqlx::query(
-            "UPDATE settings SET profile_notes = ?, updated_at = datetime('now') WHERE id = 1",
-        )
-        .bind(&notes)
-        .execute(db::pool())
-        .await;
+        let _ = db::set_profile_notes(&notes).await;
         db::log_profile_event(
             "info",
             "auto-saved LinkedIn headline/About into Settings → Profile notes (paste on LinkedIn)",
@@ -698,10 +713,15 @@ async fn fetch_github_snapshot(github_url: &str) -> Result<String> {
         .user_agent("jobbot-profile-coach/0.1 (+https://github.com/GoldevLab)")
         .timeout(Duration::from_secs(20))
         .build()?;
+    let token = crate::github::token_from_env();
 
-    let user: Value = client
+    let mut user_req = client
         .get(format!("https://api.github.com/users/{login}"))
-        .header("Accept", "application/vnd.github+json")
+        .header("Accept", "application/vnd.github+json");
+    if let Some(t) = token.as_deref() {
+        user_req = user_req.header("Authorization", format!("Bearer {t}"));
+    }
+    let user: Value = user_req
         .send()
         .await
         .context("github user")?
@@ -710,11 +730,15 @@ async fn fetch_github_snapshot(github_url: &str) -> Result<String> {
         .json()
         .await?;
 
-    let repos: Value = client
+    let mut repos_req = client
         .get(format!(
             "https://api.github.com/users/{login}/repos?sort=updated&per_page=8&type=owner"
         ))
-        .header("Accept", "application/vnd.github+json")
+        .header("Accept", "application/vnd.github+json");
+    if let Some(t) = token.as_deref() {
+        repos_req = repos_req.header("Authorization", format!("Bearer {t}"));
+    }
+    let repos: Value = repos_req
         .send()
         .await
         .context("github repos")?

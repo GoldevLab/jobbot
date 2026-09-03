@@ -146,7 +146,7 @@ async fn discover_once(settings: &Settings) -> Result<u64> {
         .unwrap_or_default();
     let mut jobs = web3_career::discover_skipping_known(
         &settings.keywords,
-        &settings.locations,
+        &style::normalize_search_locations(&settings.locations),
         &known,
     )
     .await?;
