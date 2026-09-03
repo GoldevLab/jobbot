@@ -82,12 +82,61 @@ fn render_job(j: Job) -> View {
     let is_manual = matches!(j.status.as_str(), "manual" | "ready" | "failed");
     let can_mark = matches!(j.status.as_str(), "manual" | "ready" | "failed");
     let err = j.last_error.clone().unwrap_or_default();
+    let outcome_label = j
+        .outcome
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_default();
+    let show_follow = j.status == "applied" && j.followed_up_at.is_none();
 
     view! {
         <div class="card">
             <a class="btn btn-ghost" href="/">"← Queue"</a>
             <h1>{j.title.clone()}</h1>
             <p class="muted">{format!("{} — {} · status {} · score {}", j.company, j.location, j.status, score)}</p>
+
+            {if !outcome_label.is_empty() {
+                view! { <p class="muted">{format!("Outcome: {outcome_label}")}</p> }
+            } else {
+                View::empty()
+            }}
+
+            <div class="card outcome-card">
+                <h2 style="margin-top:0">"After you applied"</h2>
+                <p class="muted">"Track recruiter reality so scoring learns. Follow-up is for +7 days with no reply."</p>
+                <div class="row">
+                    <Form submit={crate::set_job_outcome}>
+                        <input type="hidden" name="id" value={job_id.clone()} />
+                        <input type="hidden" name="outcome" value="replied" />
+                        <button class="btn" type="submit">"Replied"</button>
+                    </Form>
+                    <Form submit={crate::set_job_outcome}>
+                        <input type="hidden" name="id" value={job_id.clone()} />
+                        <input type="hidden" name="outcome" value="interview" />
+                        <button class="btn btn-primary" type="submit">"Interview"</button>
+                    </Form>
+                    <Form submit={crate::set_job_outcome}>
+                        <input type="hidden" name="id" value={job_id.clone()} />
+                        <input type="hidden" name="outcome" value="rejected" />
+                        <button class="btn btn-danger" type="submit">"Rejected"</button>
+                    </Form>
+                    <Form submit={crate::set_job_outcome}>
+                        <input type="hidden" name="id" value={job_id.clone()} />
+                        <input type="hidden" name="outcome" value="ghost" />
+                        <button class="btn btn-ghost" type="submit">"Ghost"</button>
+                    </Form>
+                    {if show_follow {
+                        view! {
+                            <Form submit={crate::mark_job_followed_up}>
+                                <input type="hidden" name="id" value={job_id.clone()} />
+                                <button class="btn btn-ghost" type="submit">"Mark follow-up sent"</button>
+                            </Form>
+                        }
+                    } else {
+                        View::empty()
+                    }}
+                </div>
+            </div>
 
             {if is_manual {
                 view! {

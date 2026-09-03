@@ -60,6 +60,10 @@ Expected: OpenRouter OK, jobs in DB (incl. Tether), Chrome opens the Tether care
 
 `discover` → `score` (LLM) → `draft` (LLM, human-ish tone) → `apply` (Chrome CDP)
 
+**Daily queue:** home shows the top 8 `ready`/`manual` jobs by score. Paste any job URL (LinkedIn, Wellfound, careers page) to import it. After apply, mark **replied / interview / rejected / ghost**. Applies older than 7 days with no outcome show a follow-up note to paste.
+
+Jobs that require US citizenship / no visa sponsorship / onsite-only are skipped before the LLM draft.
+
 **Auto-apply ATS (Rust/CDP only — no vendor SDKs):**
 
 | Host | Module |

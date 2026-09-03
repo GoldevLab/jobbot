@@ -1,24 +1,60 @@
-use crate::db::{EventRow, Job, Settings};
+use crate::db::{EventRow, Funnel, Job, Settings};
+use crate::fit;
 use resuma::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Serialize, Deserialize)]
+struct QueueSnapshot {
+    settings: Settings,
+    today: Vec<Job>,
+    followups: Vec<Job>,
+    rest: Vec<Job>,
+    funnel: Funnel,
+    events: Vec<EventRow>,
+}
 
 #[load]
-async fn queue_settings(_req: &FlowRequest) -> Settings {
-    crate::db::get_settings()
+async fn queue_page(_req: &FlowRequest) -> QueueSnapshot {
+    let settings = crate::db::get_settings()
         .await
-        .unwrap_or_else(|_| Settings::fallback())
+        .unwrap_or_else(|_| Settings::fallback());
+    let today = crate::db::list_today_queue(8).await.unwrap_or_default();
+    let followups = crate::db::list_followup_jobs(12).await.unwrap_or_default();
+    let skip: std::collections::HashSet<i64> = today
+        .iter()
+        .chain(followups.iter())
+        .map(|j| j.id)
+        .collect();
+    let rest = crate::db::list_jobs(80)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|j| !skip.contains(&j.id))
+        .take(40)
+        .collect();
+    let funnel = crate::db::funnel_counts().await.unwrap_or_default();
+    let events = crate::db::list_events(25).await.unwrap_or_default();
+    QueueSnapshot {
+        settings,
+        today,
+        followups,
+        rest,
+        funnel,
+        events,
+    }
 }
 
-#[load]
-async fn queue_jobs(_req: &FlowRequest) -> Vec<Job> {
-    crate::db::list_jobs(80).await.unwrap_or_default()
-}
-
-#[load]
-async fn queue_events(_req: &FlowRequest) -> Vec<EventRow> {
-    crate::db::list_events(25).await.unwrap_or_default()
-}
-
-fn status_badge(status: &str) -> View {
+fn status_badge(status: &str, outcome: Option<&str>) -> View {
+    if let Some(o) = outcome.filter(|s| !s.is_empty()) {
+        let (cls, label) = match o {
+            "replied" => ("badge badge-info", "replied"),
+            "interview" => ("badge badge-ok", "interview"),
+            "rejected" => ("badge badge-danger", "rejected"),
+            "ghost" => ("badge", "ghost"),
+            _ => ("badge", o),
+        };
+        return view! { <span class={cls.to_string()}>{label}</span> };
+    }
     let (cls, label) = match status {
         "discovered" => ("badge badge-info", "discovered"),
         "scoring" | "drafting" | "applying" => ("badge badge-warn", status),
@@ -83,11 +119,7 @@ fn apply_hint(job: &Job) -> &'static str {
     }
 }
 
-fn is_actionable(job: &Job) -> bool {
-    matches!(job.status.as_str(), "manual" | "ready" | "ready_draft")
-}
-
-fn job_row(j: Job) -> View {
+fn job_row(j: Job, follow_up: bool) -> View {
     let title = j.title.clone();
     let company = if j.company.is_empty() {
         "—".into()
@@ -100,12 +132,17 @@ fn job_row(j: Job) -> View {
         .unwrap_or_else(|| "—".into());
     let url = j.apply_url.clone().unwrap_or(j.url.clone());
     let hint = apply_hint(&j);
-    let badge = status_badge(&j.status);
+    let badge = status_badge(&j.status, j.outcome.as_deref());
     let pitch = draft_pitch(&j.draft_json);
     let detail = format!("/jobs/{}", j.id);
     let err = j.last_error.clone().unwrap_or_default();
-    let show_mark = matches!(j.status.as_str(), "manual" | "ready");
+    let show_mark = matches!(j.status.as_str(), "manual" | "ready" | "failed");
     let id = j.id.to_string();
+    let note = if follow_up {
+        fit::follow_up_note(&j.title, &j.company, &pitch)
+    } else {
+        String::new()
+    };
     view! {
         <tr>
             <td>{badge}<div class="muted">{j.source}</div></td>
@@ -113,7 +150,9 @@ fn job_row(j: Job) -> View {
                 <strong>{title}</strong>
                 <div class="muted">{format!("{company} — {}", j.location)}</div>
                 <div class="muted">{hint}</div>
-                {if !pitch.is_empty() {
+                {if follow_up && !note.is_empty() {
+                    view! { <pre class="log follow-note">{note}</pre> }
+                } else if !pitch.is_empty() {
                     view! { <div class="pitch">{pitch}</div> }
                 } else if !err.is_empty() && (j.status == "failed" || j.status == "manual") {
                     view! { <div class="muted">{crate::style::truncate(&err, 120)}</div> }
@@ -130,12 +169,23 @@ fn job_row(j: Job) -> View {
                 <a href={format!("/jobs/{}/cv.pdf", j.id)}>"cv"</a>
                 {" · "}
                 <a href={url} target="_blank" rel="noreferrer">"open"</a>
-                {if show_mark {
+                {if follow_up {
+                    view! {
+                        {" · "}
+                        <Form submit={crate::mark_job_followed_up}>
+                            <input type="hidden" name="id" value={id.clone()} />
+                            <button class="btn btn-ghost linkish" type="submit">"followed up"</button>
+                        </Form>
+                    }
+                } else {
+                    View::empty()
+                }}
+                {if show_mark && !follow_up {
                     view! {
                         {" · "}
                         <Form submit={crate::mark_job_applied}>
                             <input type="hidden" name="id" value={id} />
-                            <button class="btn btn-ghost" type="submit" style="display:inline;padding:0;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer;font:inherit">"mark applied"</button>
+                            <button class="btn btn-ghost linkish" type="submit">"mark applied"</button>
                         </Form>
                     }
                 } else {
@@ -147,56 +197,36 @@ fn job_row(j: Job) -> View {
 }
 
 pub fn page(_req: FlowRequest) -> View {
-    load_all3(
-        use_queue_settings_load(),
-        use_queue_jobs_load(),
-        use_queue_events_load(),
-        |s, jobs, events| render_queue(s, jobs, events),
+    load_boundary(
+        use_queue_page_load(),
+        |snap| render_queue(snap),
         |err| error_page(&FlowError::Loader(err)),
         || View::empty(),
     )
 }
 
-fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
+fn render_queue(snap: QueueSnapshot) -> View {
+    let s = snap.settings;
     let running = s.worker_running != 0;
     let auto_apply = s.auto_apply != 0;
-    let chrome_hint = std::env::var("JOBBOT_CHROME_CDP").ok().filter(|u| !u.trim().is_empty());
-    let discovered = jobs.iter().filter(|j| j.status == "discovered").count();
-    let scoring = jobs
-        .iter()
-        .filter(|j| matches!(j.status.as_str(), "scoring" | "drafting" | "applying" | "ready_draft"))
-        .count();
-    let ready = jobs
-        .iter()
-        .filter(|j| matches!(j.status.as_str(), "ready" | "manual"))
-        .count();
-    // Honest counts: HTTP only while still `ready` (not blocked manuals).
-    let http_ready = jobs
-        .iter()
-        .filter(|j| {
-            j.status == "ready"
-                && crate::sources::web3_career::is_http_auto_applyable_url(
-                    j.apply_url.as_deref().unwrap_or(""),
-                )
-                && !ats_blocked_manual(j)
-        })
-        .count();
-    let kit_only = ready.saturating_sub(http_ready);
-    let applied = jobs.iter().filter(|j| j.status == "applied").count();
-    let skipped = jobs.iter().filter(|j| j.status == "skipped").count();
+    let chrome_hint = std::env::var("JOBBOT_CHROME_CDP")
+        .ok()
+        .filter(|u| !u.trim().is_empty());
+    let f = snap.funnel;
 
     let apply_banner = if !auto_apply {
         "Auto-apply is OFF. Turn it on in Settings (or JOBBOT_AUTO_APPLY=true). Recruitee can submit over HTTP without Chrome; Greenhouse/Ashby need local Chrome CDP."
             .to_string()
     } else if chrome_hint.is_none() {
-        "Auto-apply ON (HTTP). Recruitee without video/captcha submits from Fly. Manual jobs: open draft → Download CV PDF + paste kit, then Mark applied."
+        "Auto-apply ON (HTTP). Recruitee without video/captcha submits from Fly. Today's queue: kit → apply → mark applied."
             .to_string()
     } else {
-        "Auto-apply ON — HTTP Recruitee first, then Chrome. Manual jobs have CV + paste kit on the draft page."
+        "Auto-apply ON — HTTP Recruitee first, then Chrome. Today's queue is the work that still needs you."
             .to_string()
     };
 
-    let live = events
+    let live = snap
+        .events
         .into_iter()
         .map(|e| {
             let job = e
@@ -207,11 +237,23 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
         })
         .collect::<String>();
 
-    let actionable: Vec<Job> = jobs.iter().filter(|j| is_actionable(j)).cloned().collect();
-    let rest: Vec<Job> = jobs.into_iter().filter(|j| !is_actionable(&j)).collect();
-
-    let action_rows = actionable.into_iter().map(job_row).collect::<Vec<_>>();
-    let rest_rows = rest.into_iter().take(40).map(job_row).collect::<Vec<_>>();
+    let today_empty = snap.today.is_empty();
+    let follow_empty = snap.followups.is_empty();
+    let today_rows = snap
+        .today
+        .into_iter()
+        .map(|j| job_row(j, false))
+        .collect::<Vec<_>>();
+    let follow_rows = snap
+        .followups
+        .into_iter()
+        .map(|j| job_row(j, true))
+        .collect::<Vec<_>>();
+    let rest_rows = snap
+        .rest
+        .into_iter()
+        .map(|j| job_row(j, false))
+        .collect::<Vec<_>>();
 
     view! {
         <div>
@@ -219,9 +261,21 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
             <div class="card">
                 <h1>"Application queue"</h1>
                 <p class="muted">
-                    "Live worker feed below. Scores/drafts poll via Resuma loader_poll while this tab is open. Each ready job gets a tailored pitch + CV bullets."
+                    "Work the 8 jobs below, then paste any URL you find elsewhere. Funnel is recruiter reality, not scrape volume."
                 </p>
                 <p class="muted">{apply_banner}</p>
+                <p class="funnel" aria-label="Application funnel">
+                    {format!(
+                        "funnel: {d} new · {dr} drafted · {a} applied · {r} replied · {i} interview · {rej} rejected · {g} ghost",
+                        d = f.discovered,
+                        dr = f.drafted,
+                        a = f.applied,
+                        r = f.replied,
+                        i = f.interview,
+                        rej = f.rejected,
+                        g = f.ghost,
+                    )}
+                </p>
                 <div class="row">
                     <span class="status-pill">
                         <span class={if running { "dot on" } else { "dot" }}></span>
@@ -229,7 +283,7 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                     </span>
                     <span class="muted">
                         {format!(
-                            "queue: {discovered} new · {scoring} in-flight · {ready} ready/manual ({http_ready} HTTP pending · {kit_only} kit) · {applied} applied · {skipped} skipped · auto-apply={}",
+                            "auto-apply={}",
                             if auto_apply { "on" } else { "off" }
                         )}
                     </span>
@@ -256,18 +310,33 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                     <a class="btn btn-ghost" href="/settings">"Settings"</a>
                     <a class="btn btn-ghost" href="/logs">"Logs"</a>
                 </div>
+                <Form submit={crate::import_job_url}>
+                    <div class="field">
+                        <label for="import-url">"Paste job URL"</label>
+                        <p id="import-url-help" class="hint">"LinkedIn, Wellfound, or a careers page. Imports into the queue for scoring/draft."</p>
+                        <div class="row">
+                            <input
+                                id="import-url"
+                                name="url"
+                                type="url"
+                                inputmode="url"
+                                autocomplete="url"
+                                enterkeyhint="go"
+                                required=""
+                                aria-describedby="import-url-help"
+                                placeholder="https://"
+                            />
+                            <button class="btn btn-primary" type="submit">"Import URL"</button>
+                        </div>
+                    </div>
+                </Form>
             </div>
 
             <div class="card">
-                <h2>"Live activity"</h2>
-                <div class="log live">{if live.is_empty() { "Waiting for worker events…".into() } else { live }}</div>
-            </div>
-
-            <div class="card">
-                <h2>"Needs you"</h2>
-                <p class="muted">"Manual / ready jobs — download kit, apply, then mark applied. HTTP-pending stays here until the worker submits."</p>
-                {if action_rows.is_empty() {
-                    view! { <p class="muted">"Nothing waiting — discover or wait for new matches."</p> }
+                <h2>"Today — apply these"</h2>
+                <p class="muted">"Top 8 by score. Download kit, submit, mark applied. Leave the rest."</p>
+                {if today_empty {
+                    view! { <p class="muted">"Nothing waiting — discover, import a URL, or wait for drafts."</p> }
                 } else {
                     view! {
                         <table>
@@ -280,7 +349,7 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
                                 </tr>
                             </thead>
                             <tbody>
-                                {action_rows}
+                                {today_rows}
                             </tbody>
                         </table>
                     }
@@ -288,8 +357,37 @@ fn render_queue(s: Settings, jobs: Vec<Job>, events: Vec<EventRow>) -> View {
             </div>
 
             <div class="card">
+                <h2>"Follow up (7+ days)"</h2>
+                <p class="muted">"Copy the note, send it, then mark followed up. No inbox — you paste."</p>
+                {if follow_empty {
+                    view! { <p class="muted">"No stale applies yet."</p> }
+                } else {
+                    view! {
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>"Status"</th>
+                                    <th>"Role / follow-up note"</th>
+                                    <th>"Score"</th>
+                                    <th>"Links"</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {follow_rows}
+                            </tbody>
+                        </table>
+                    }
+                }}
+            </div>
+
+            <details class="activity-fold">
+                <summary>"Live activity"</summary>
+                <div class="log live">{if live.is_empty() { "Waiting for worker events…".into() } else { live }}</div>
+            </details>
+
+            <div class="card">
                 <h2>"Rest of queue"</h2>
-                <p class="muted">"Applied, skipped, failed — noise kept out of the way."</p>
+                <p class="muted">"Applied, skipped, in-flight — kept out of the way."</p>
                 <table>
                     <thead>
                         <tr>

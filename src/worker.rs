@@ -29,6 +29,16 @@ pub fn spawn(chrome: SharedChrome) -> WorkerHandle {
 async fn run_loop(stop: Arc<AtomicBool>, chrome: SharedChrome) -> Result<()> {
     db::log_event(None, "info", "worker started").await;
     let _ = scrub_stale_geo_drafts().await;
+    if let Ok(n) = db::backfill_apply_lessons_from_jobs().await {
+        if n > 0 {
+            db::log_event(
+                None,
+                "info",
+                format!("apply memory: loaded {n} past fail/manual outcome(s)"),
+            )
+            .await;
+        }
+    }
     let mut tick: u64 = 0;
     let mut last_discover = std::time::Instant::now()
         .checked_sub(Duration::from_secs(3600))
@@ -304,6 +314,15 @@ async fn score_batch(agent: &LlmAgent, limit: i64) -> Result<()> {
     for job in jobs {
         if let Some(reason) = quick_skip(&job.title, &job.company) {
             db::update_job_status(job.id, "skipped", Some(5.0), None, Some(reason))
+                .await?;
+            db::log_event(Some(job.id), "info", format!("{} — {}", job.title, reason))
+                .await;
+            continue;
+        }
+        if let Some(reason) =
+            crate::fit::visa_or_onsite_skip(&job.title, &job.location, &job.description)
+        {
+            db::update_job_status(job.id, "skipped", Some(8.0), None, Some(reason))
                 .await?;
             db::log_event(Some(job.id), "info", format!("{} — {}", job.title, reason))
                 .await;
@@ -642,14 +661,18 @@ async fn apply_batch(chrome: &SharedChrome, settings: &Settings, limit: i64) -> 
         for job in stranded {
             let apply = job.apply_url.clone().unwrap_or_default();
             if apply.is_empty() || apply.contains("web3.career") {
-                db::update_job_status(
-                    job.id,
-                    "manual",
-                    None,
-                    None,
-                    Some("draft ready — open /jobs/:id; auto-apply needs external ATS URL"),
+                let note = "draft ready — open /jobs/:id; auto-apply needs external ATS URL";
+                db::update_job_status(job.id, "manual", None, None, Some(note))
+                    .await?;
+                let _ = db::record_apply_outcome(
+                    "apply_manual",
+                    "unknown",
+                    &job.title,
+                    &job.company,
+                    note,
+                    -0.3,
                 )
-                .await?;
+                .await;
                 db::log_event(
                     Some(job.id),
                     "info",
@@ -693,6 +716,15 @@ async fn apply_batch(chrome: &SharedChrome, settings: &Settings, limit: i64) -> 
                 ats.as_str()
             );
             db::update_job_status(job.id, "manual", None, None, Some(&note)).await?;
+            let _ = db::record_apply_outcome(
+                "apply_manual",
+                ats.as_str(),
+                &job.title,
+                &job.company,
+                &note,
+                -0.3,
+            )
+            .await;
             db::log_event(Some(job.id), "info", note).await;
             continue;
         }
@@ -766,14 +798,41 @@ async fn apply_batch(chrome: &SharedChrome, settings: &Settings, limit: i64) -> 
                 if res.submitted {
                     db::update_job_status(job.id, "applied", None, None, Some(&res.note))
                         .await?;
+                    let _ = db::record_apply_outcome(
+                        "apply_ok",
+                        ats.as_str(),
+                        &job.title,
+                        &job.company,
+                        &res.note,
+                        0.8,
+                    )
+                    .await;
                     db::log_event(Some(job.id), "info", format!("applied: {}", res.note)).await;
                 } else if res.note.starts_with("manual:") {
                     db::update_job_status(job.id, "manual", None, None, Some(&res.note))
                         .await?;
+                    let _ = db::record_apply_outcome(
+                        "apply_manual",
+                        ats.as_str(),
+                        &job.title,
+                        &job.company,
+                        &res.note,
+                        -0.3,
+                    )
+                    .await;
                     db::log_event(Some(job.id), "info", res.note).await;
                 } else {
                     db::update_job_status(job.id, "failed", None, None, Some(&res.note))
                         .await?;
+                    let _ = db::record_apply_outcome(
+                        "apply_fail",
+                        ats.as_str(),
+                        &job.title,
+                        &job.company,
+                        &res.note,
+                        -0.8,
+                    )
+                    .await;
                     db::log_event(Some(job.id), "warn", format!("apply incomplete: {}", res.note))
                         .await;
                 }
@@ -781,6 +840,15 @@ async fn apply_batch(chrome: &SharedChrome, settings: &Settings, limit: i64) -> 
             Err(e) => {
                 let msg = format!("{e:#}");
                 db::update_job_status(job.id, "failed", None, None, Some(&msg)).await?;
+                let _ = db::record_apply_outcome(
+                    "apply_fail",
+                    ats.as_str(),
+                    &job.title,
+                    &job.company,
+                    &msg,
+                    -1.0,
+                )
+                .await;
                 db::log_event(Some(job.id), "error", format!("apply error: {msg}")).await;
             }
         }

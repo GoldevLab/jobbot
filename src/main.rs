@@ -3,7 +3,9 @@
 mod agent;
 mod browser;
 mod db;
+mod fit;
 mod github;
+mod import_url;
 mod packet;
 mod pages;
 mod profile_worker;
@@ -51,6 +53,17 @@ struct SettingsForm {
 #[derive(Debug, Deserialize)]
 struct IdForm {
     id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UrlForm {
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OutcomeForm {
+    id: String,
+    outcome: String,
 }
 
 #[submit]
@@ -210,6 +223,90 @@ async fn mark_job_applied(
         .await
         .map_err(|_| SubmitError::new("Could not update job"))?;
         db::log_event(Some(id), "info", "marked applied manually").await;
+    }
+    Ok(Redirect::to("/"))
+}
+
+#[submit]
+async fn import_job_url(
+    form: UrlForm,
+    _req: &FlowRequest,
+) -> std::result::Result<Redirect, SubmitError> {
+    let raw = form.url.trim();
+    if raw.is_empty() {
+        return Err(SubmitError::new("Paste a job URL first"));
+    }
+    let discovered = import_url::fetch_imported_job(raw)
+        .await
+        .map_err(|e| SubmitError::new(format!("Could not import URL: {e}")))?;
+    let id = db::upsert_job(
+        &discovered.source,
+        &discovered.external_id,
+        &discovered.title,
+        &discovered.company,
+        &discovered.location,
+        &discovered.url,
+        discovered.apply_url.as_deref(),
+        &discovered.description,
+    )
+    .await
+    .map_err(|_| SubmitError::new("Could not save imported job"))?;
+    db::log_event(
+        Some(id),
+        "info",
+        format!("imported URL: {} @ {}", discovered.title, discovered.company),
+    )
+    .await;
+    Ok(Redirect::to(format!("/jobs/{id}")))
+}
+
+#[submit]
+async fn set_job_outcome(
+    form: OutcomeForm,
+    _req: &FlowRequest,
+) -> std::result::Result<Redirect, SubmitError> {
+    let id: i64 = form.id.trim().parse().unwrap_or(0);
+    let Some(outcome) = fit::valid_outcome(&form.outcome) else {
+        return Err(SubmitError::new("Unknown outcome"));
+    };
+    if id > 0 {
+        db::set_job_outcome(id, outcome)
+            .await
+            .map_err(|_| SubmitError::new("Could not save outcome"))?;
+        db::log_event(Some(id), "info", format!("outcome: {outcome}")).await;
+        let _ = db::record_apply_outcome(
+            match outcome {
+                "rejected" => "apply_fail",
+                "interview" | "replied" => "apply_ok",
+                _ => "apply_manual",
+            },
+            "outcome",
+            outcome,
+            "",
+            outcome,
+            match outcome {
+                "interview" => 1.2,
+                "replied" => 0.6,
+                "rejected" => -0.5,
+                _ => -0.2,
+            },
+        )
+        .await;
+    }
+    Ok(Redirect::to(format!("/jobs/{id}")))
+}
+
+#[submit]
+async fn mark_job_followed_up(
+    form: IdForm,
+    _req: &FlowRequest,
+) -> std::result::Result<Redirect, SubmitError> {
+    let id: i64 = form.id.trim().parse().unwrap_or(0);
+    if id > 0 {
+        db::mark_job_followed_up(id)
+            .await
+            .map_err(|_| SubmitError::new("Could not mark follow-up"))?;
+        db::log_event(Some(id), "info", "follow-up sent").await;
     }
     Ok(Redirect::to("/"))
 }

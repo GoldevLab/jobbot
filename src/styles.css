@@ -57,10 +57,28 @@ h2 { font-size: 1.05rem; color: var(--muted); font-weight: 700; text-transform: 
 .btn-ghost { background: transparent; }
 
 label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0.55rem 0 0.2rem; }
-input[type=text], input[type=email], input[type=number], textarea {
-  width: 100%; padding: 0.45rem 0.55rem; border-radius: 8px;
+.field { margin-block: 0.85rem; }
+.field .row { align-items: stretch; }
+.hint { font-size: 0.8rem; color: var(--muted); margin: 0 0 0.35rem; }
+input[type=text], input[type=email], input[type=number], input[type=url], textarea {
+  width: 100%; padding: 0.55rem 0.65rem; border-radius: 8px;
   border: 1px solid var(--line); background: #101610; color: var(--text); font: inherit;
+  font-size: 1rem; min-height: 48px; box-sizing: border-box;
 }
+input:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input:user-invalid {
+  border-color: var(--danger);
+}
+.funnel { color: var(--muted); font-size: 0.9rem; margin: 0.4rem 0 0.2rem; }
+.follow-note { max-height: 8rem; margin-top: 0.4rem; }
+.linkish {
+  display: inline; padding: 0; border: 0; background: none;
+  color: inherit; text-decoration: underline; cursor: pointer; font: inherit;
+}
+.outcome-card { margin: 1rem 0; background: color-mix(in srgb, var(--panel) 80%, transparent); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
 @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
 
@@ -111,3 +129,6 @@ pre.log { white-space: pre-wrap; }
 }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(61,155,110,0.25); }
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto; }
+}

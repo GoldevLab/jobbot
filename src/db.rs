@@ -236,6 +236,20 @@ pub struct Job {
     pub last_error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub applied_at: Option<String>,
+    pub followed_up_at: Option<String>,
+    pub outcome: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct Funnel {
+    pub discovered: i64,
+    pub drafted: i64,
+    pub applied: i64,
+    pub replied: i64,
+    pub interview: i64,
+    pub rejected: i64,
+    pub ghost: i64,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
@@ -617,9 +631,76 @@ pub async fn insert_profile_lesson(
     Ok(())
 }
 
-/// Kept profile copy for the apply-agent drafts (coach → jobs).
+/// Store an apply result so later drafts avoid the same ATS/field mistakes.
+pub async fn record_apply_outcome(
+    source: &str,
+    ats: &str,
+    title: &str,
+    company: &str,
+    note: &str,
+    weight: f64,
+) -> anyhow::Result<bool> {
+    let body = crate::style::truncate(note.trim(), 220);
+    if body.is_empty() {
+        return Ok(false);
+    }
+    let title = format!("{title} @ {company}");
+    let exists: Option<(i64,)> = sqlx::query_as(
+        r#"
+        SELECT id FROM profile_lessons
+        WHERE source = ? AND title = ? AND body = ?
+        LIMIT 1
+        "#,
+    )
+    .bind(source)
+    .bind(&title)
+    .bind(body.as_str())
+    .fetch_optional(pool())
+    .await
+    .ok()
+    .flatten();
+    if exists.is_some() {
+        return Ok(false);
+    }
+    insert_profile_lesson(source, ats, &title, &body, weight).await?;
+    Ok(true)
+}
+
+/// One-shot: turn existing failed/manual `last_error` rows into apply memory.
+pub async fn backfill_apply_lessons_from_jobs() -> anyhow::Result<u64> {
+    let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT title, company, status, last_error FROM jobs
+        WHERE status IN ('failed', 'manual')
+          AND last_error IS NOT NULL
+          AND trim(last_error) != ''
+        ORDER BY id DESC
+        LIMIT 30
+        "#,
+    )
+    .fetch_all(pool())
+    .await?;
+    let mut n = 0u64;
+    for (title, company, status, err) in rows {
+        let Some(note) = err else { continue };
+        let source = if status == "manual" {
+            "apply_manual"
+        } else {
+            "apply_fail"
+        };
+        let weight = if status == "manual" { -0.3 } else { -0.8 };
+        if record_apply_outcome(source, "jobs", &title, &company, &note, weight).await? {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// Kept profile copy + apply outcomes for the apply-agent drafts.
 pub async fn draft_learning_context(limit: i64) -> String {
-    let Ok(rows) = sqlx::query_as::<_, (String, String, String)>(
+    let mut out = String::new();
+
+    if let Ok(rows) = sqlx::query_as::<_, (String, String, String)>(
         r#"
         SELECT platform, title, body FROM profile_lessons
         WHERE source IN ('keep', 'applied')
@@ -629,22 +710,47 @@ pub async fn draft_learning_context(limit: i64) -> String {
     .bind(limit)
     .fetch_all(pool())
     .await
-    else {
-        return String::new();
-    };
-    if rows.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from("Kept profile lines:\n");
-    for (platform, title, body) in rows {
-        if crate::style::stale_geo_pitch(&body) {
-            continue; // don't teach apply-agent Norway/EU-only lines
+    {
+        if !rows.is_empty() {
+            out.push_str("Kept profile lines:\n");
+            for (platform, title, body) in rows {
+                if crate::style::stale_geo_pitch(&body) {
+                    continue;
+                }
+                out.push_str(&format!(
+                    "- [{platform}] {title}: {}\n",
+                    crate::style::truncate(&body, 200)
+                ));
+            }
+            out.push('\n');
         }
-        out.push_str(&format!(
-            "- [{platform}] {title}: {}\n",
-            crate::style::truncate(&body, 200)
-        ));
     }
+
+    if let Ok(rows) = sqlx::query_as::<_, (String, String, String, String)>(
+        r#"
+        SELECT source, platform, title, body FROM profile_lessons
+        WHERE source IN ('apply_ok', 'apply_fail', 'apply_manual')
+        ORDER BY id DESC LIMIT ?
+        "#,
+    )
+    .bind(limit.max(8))
+    .fetch_all(pool())
+    .await
+    {
+        if !rows.is_empty() {
+            out.push_str("Apply memory (ok = this ATS/path works; fail = do not repeat that mistake; manual = cannot auto-submit, keep answers short and kit-ready):\n");
+            for (source, platform, title, body) in rows {
+                if crate::style::stale_geo_pitch(&body) {
+                    continue;
+                }
+                out.push_str(&format!(
+                    "- [{source}/{platform}] {title}: {}\n",
+                    crate::style::truncate(&body, 180)
+                ));
+            }
+        }
+    }
+
     out
 }
 
@@ -795,7 +901,6 @@ pub async fn upsert_jobs_batch(
     Ok((jobs.len(), newly))
 }
 
-#[allow(dead_code)]
 pub async fn upsert_job(
     source: &str,
     external_id: &str,
@@ -912,6 +1017,10 @@ pub async fn update_job_status(
             score = COALESCE(?, score),
             draft_json = COALESCE(?, draft_json),
             last_error = ?,
+            applied_at = CASE
+                WHEN ? = 'applied' AND applied_at IS NULL THEN datetime('now')
+                ELSE applied_at
+            END,
             updated_at = datetime('now')
         WHERE id = ?
         "#,
@@ -920,10 +1029,107 @@ pub async fn update_job_status(
     .bind(score)
     .bind(draft_json)
     .bind(last_error)
+    .bind(status)
     .bind(id)
     .execute(pool())
     .await?;
     Ok(())
+}
+
+pub async fn set_job_outcome(id: i64, outcome: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE jobs SET
+            outcome = ?,
+            status = CASE WHEN status IN ('ready', 'manual', 'failed') THEN 'applied' ELSE status END,
+            applied_at = COALESCE(applied_at, datetime('now')),
+            updated_at = datetime('now')
+        WHERE id = ?
+        "#,
+    )
+    .bind(outcome)
+    .bind(id)
+    .execute(pool())
+    .await?;
+    Ok(())
+}
+
+pub async fn mark_job_followed_up(id: i64) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE jobs SET
+            followed_up_at = datetime('now'),
+            updated_at = datetime('now')
+        WHERE id = ?
+        "#,
+    )
+    .bind(id)
+    .execute(pool())
+    .await?;
+    Ok(())
+}
+
+/// Top scored jobs that still need a human (kit / mark applied).
+pub async fn list_today_queue(limit: i64) -> anyhow::Result<Vec<Job>> {
+    let rows = sqlx::query_as::<_, Job>(
+        r#"
+        SELECT * FROM jobs
+        WHERE status IN ('manual', 'ready', 'ready_draft', 'failed')
+        ORDER BY COALESCE(score, 0) DESC, updated_at DESC
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool())
+    .await?;
+    Ok(rows)
+}
+
+/// Applied ≥7 days ago, no follow-up, no recruiter outcome yet.
+pub async fn list_followup_jobs(limit: i64) -> anyhow::Result<Vec<Job>> {
+    let rows = sqlx::query_as::<_, Job>(
+        r#"
+        SELECT * FROM jobs
+        WHERE status = 'applied'
+          AND applied_at IS NOT NULL
+          AND applied_at <= datetime('now', '-7 days')
+          AND followed_up_at IS NULL
+          AND (outcome IS NULL OR trim(outcome) = '')
+        ORDER BY applied_at ASC
+        LIMIT ?
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool())
+    .await?;
+    Ok(rows)
+}
+
+pub async fn funnel_counts() -> anyhow::Result<Funnel> {
+    let row: (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+        r#"
+        SELECT
+          COALESCE(SUM(CASE WHEN status = 'discovered' THEN 1 ELSE 0 END), 0),
+          COALESCE(SUM(CASE WHEN status IN ('ready_draft', 'drafting', 'ready', 'manual') THEN 1 ELSE 0 END), 0),
+          COALESCE(SUM(CASE WHEN status = 'applied' AND (outcome IS NULL OR trim(outcome) = '') THEN 1 ELSE 0 END), 0),
+          COALESCE(SUM(CASE WHEN outcome = 'replied' THEN 1 ELSE 0 END), 0),
+          COALESCE(SUM(CASE WHEN outcome = 'interview' THEN 1 ELSE 0 END), 0),
+          COALESCE(SUM(CASE WHEN outcome = 'rejected' THEN 1 ELSE 0 END), 0),
+          COALESCE(SUM(CASE WHEN outcome = 'ghost' THEN 1 ELSE 0 END), 0)
+        FROM jobs
+        "#,
+    )
+    .fetch_one(pool())
+    .await?;
+    Ok(Funnel {
+        discovered: row.0,
+        drafted: row.1,
+        applied: row.2,
+        replied: row.3,
+        interview: row.4,
+        rejected: row.5,
+        ghost: row.6,
+    })
 }
 
 pub async fn update_job_apply_url(id: i64, apply_url: &str) -> anyhow::Result<()> {

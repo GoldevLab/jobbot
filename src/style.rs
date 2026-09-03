@@ -65,7 +65,7 @@ GitHub: {github}
 Working from: {country}
 Expected salary USD: {salary}
 
-Shared memory from the profile coach (kept bios/headlines — match this voice when it fits):
+Shared memory (kept bios/headlines + apply outcomes). Match kept voice. If apply_fail mentions a missing field, include that field. If apply_manual, write a tight paste-ready cover_note:
 {memory}
 
 Job: {title} @ {company} ({location})

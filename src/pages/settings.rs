@@ -23,14 +23,14 @@ fn render_settings(s: Settings) -> View {
         view! {
             <label style="display:flex;gap:0.5rem;align-items:center;margin:0">
                 <input type="checkbox" name="auto_apply" value="on" checked="checked" />
-                "Auto-apply when draft is ready"
+                "Auto-apply when the ATS is supported (Recruitee/Tether HTTP; Greenhouse needs local Chrome)"
             </label>
         }
     } else {
         view! {
             <label style="display:flex;gap:0.5rem;align-items:center;margin:0">
                 <input type="checkbox" name="auto_apply" value="on" />
-                "Auto-apply when draft is ready"
+                "Auto-apply when the ATS is supported (Recruitee/Tether HTTP; Greenhouse needs local Chrome)"
             </label>
         }
     };
@@ -38,7 +38,7 @@ fn render_settings(s: Settings) -> View {
     view! {
         <div class="card">
             <h1>"Settings"</h1>
-            <p class="muted">"Profile used when filling Recruitee forms. CV path must be absolute on this machine."</p>
+            <p class="muted">"Profile used when filling ATS forms. CV path must be absolute on this machine. Auto-apply submits Recruitee/Tether over HTTP; other boards stay as manual kits. Failures are stored as apply memory for the next drafts."</p>
             <Form submit={crate::save_settings}>
                 <div class="grid2">
                     <div>
